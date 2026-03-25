@@ -42,6 +42,7 @@ func main() {
 	authRepo := auth.NewRepository(db)
 	authService := auth.NewService(authRepo, cfg.JWT)
 	authHandler := auth.NewHandler(authService)
+	usersHandler := auth.NewUsersHandler(authRepo)
 
 	// ── 5. Messaging модуль ──────────────────
 	msgRepo := messaging.NewRepository(db)
@@ -65,6 +66,7 @@ func main() {
 	msgHandler.RegisterRoutes(mux)
 	chHandler.RegisterRoutes(mux)
 	rtHandler.RegisterRoutes(mux)
+	usersHandler.RegisterRoutes(mux)
 
 	// ── 8. Middleware ─────────────────────────
 	authMW := middleware.Auth(authService)

@@ -35,9 +35,9 @@ type User struct {
 	ID           string    `json:"id"`
 	Username     string    `json:"username"`
 	DisplayName  string    `json:"display_name"`
-	Email        *string   `json:"email,omitempty"`   // указатель, потому что может быть NULL
+	Email        *string   `json:"email,omitempty"` // указатель, потому что может быть NULL
 	Phone        *string   `json:"phone,omitempty"`
-	PasswordHash []byte    `json:"-"`                 // никогда не отдаём наружу
+	PasswordHash []byte    `json:"-"` // никогда не отдаём наружу
 	AvatarURL    *string   `json:"avatar_url,omitempty"`
 	PublicKey    *string   `json:"public_key,omitempty"`
 	Status       string    `json:"status"`
@@ -204,4 +204,61 @@ func (r *Repository) DeleteAllUserSessions(ctx context.Context, userID string) e
 func (r *Repository) UpdateLastSeen(ctx context.Context, userID string) error {
 	_, err := r.db.Exec(ctx, `UPDATE users SET last_seen_at = NOW() WHERE id = $1`, userID)
 	return err
+}
+
+// SearchUsers ищет пользователей по username или display_name.
+// Использует ILIKE для case-insensitive поиска.
+// Поддерживает частичное совпадение: "ali" найдёт "alice", "Alina".
+// Исключает текущего пользователя из результатов.
+func (r *Repository) SearchUsers(ctx context.Context, query string, currentUserID string, limit int) ([]User, error) {
+	pattern := "%" + query + "%"
+
+	rows, err := r.db.Query(ctx, `
+		SELECT id, username, display_name, avatar_url,
+		       public_key, status, bio, last_seen_at, created_at
+		FROM users
+		WHERE (username ILIKE $1 OR display_name ILIKE $1)
+		  AND id != $2
+		  AND status = 'active'
+		ORDER BY
+			CASE WHEN username ILIKE $3 THEN 0 ELSE 1 END,
+			username
+		LIMIT $4
+	`, pattern, currentUserID, query+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var u User
+		err := rows.Scan(
+			&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL,
+			&u.PublicKey, &u.Status, &u.Bio, &u.LastSeenAt, &u.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+// GetUserPublicProfile возвращает публичный профиль пользователя.
+// Не содержит email и phone — они приватные.
+func (r *Repository) GetUserPublicProfile(ctx context.Context, userID string) (*User, error) {
+	user := &User{}
+	err := r.db.QueryRow(ctx, `
+		SELECT id, username, display_name, avatar_url,
+		       public_key, status, bio, last_seen_at, created_at
+		FROM users WHERE id = $1 AND status = 'active'
+	`, userID).Scan(
+		&user.ID, &user.Username, &user.DisplayName, &user.AvatarURL,
+		&user.PublicKey, &user.Status, &user.Bio, &user.LastSeenAt, &user.CreatedAt,
+	)
+	if err != nil {
+		return nil, ErrUserNotFound
+	}
+	return user, nil
 }
