@@ -11,6 +11,7 @@ type Config struct {
 	Redis      RedisConfig
 	JWT        JWTConfig
 	Centrifugo CentrifugoConfig
+	MinIO      MinIOConfig
 }
 
 type ServerConfig struct {
@@ -37,6 +38,14 @@ type CentrifugoConfig struct {
 	HMACSecret string // секрет для подписи клиентских JWT
 }
 
+type MinIOConfig struct {
+	Endpoint  string
+	AccessKey string
+	SecretKey string
+	Bucket    string
+	UseSSL    bool
+}
+
 func Load() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -59,6 +68,13 @@ func Load() *Config {
 			APIURL:     getEnv("CENTRIFUGO_API_URL", "http://localhost:8001/api"),
 			APIKey:     getEnv("CENTRIFUGO_API_KEY", "vortex-centrifugo-api-key-change-in-production"),
 			HMACSecret: getEnv("CENTRIFUGO_SECRET", "vortex-centrifugo-secret-change-in-production"),
+		},
+		MinIO: MinIOConfig{
+			Endpoint:  getEnv("MINIO_ENDPOINT", "127.0.0.1:9000"),
+			AccessKey: getEnv("MINIO_ACCESS_KEY", "vortex_minio"),
+			SecretKey: getEnv("MINIO_SECRET_KEY", "vortex_minio_dev"),
+			Bucket:    getEnv("MINIO_BUCKET", "vortex-media"),
+			UseSSL:    false,
 		},
 	}
 }

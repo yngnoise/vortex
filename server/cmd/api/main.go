@@ -11,6 +11,7 @@ import (
 
 	"github.com/yngnoise/vortex/internal/auth"
 	"github.com/yngnoise/vortex/internal/channels"
+	"github.com/yngnoise/vortex/internal/media"
 	"github.com/yngnoise/vortex/internal/messaging"
 	"github.com/yngnoise/vortex/internal/middleware"
 	"github.com/yngnoise/vortex/internal/realtime"
@@ -37,6 +38,17 @@ func main() {
 		cfg.Centrifugo.HMACSecret,
 	)
 	rtHandler := realtime.NewHandler(rtClient)
+
+	// ── Media (файловое хранилище) ───────────
+	storage, err := media.NewStorage(
+		cfg.MinIO.Endpoint, cfg.MinIO.AccessKey,
+		cfg.MinIO.SecretKey, cfg.MinIO.Bucket, cfg.MinIO.UseSSL,
+	)
+	if err != nil {
+		log.Fatalf("Failed to connect to MinIO: %v", err)
+	}
+	log.Println("Connected to MinIO")
+	mediaHandler := media.NewHandler(storage)
 
 	// ── 4. Auth модуль ───────────────────────
 	authRepo := auth.NewRepository(db)
@@ -67,6 +79,7 @@ func main() {
 	chHandler.RegisterRoutes(mux)
 	rtHandler.RegisterRoutes(mux)
 	usersHandler.RegisterRoutes(mux)
+	mediaHandler.RegisterRoutes(mux)
 
 	// ── 8. Middleware ─────────────────────────
 	authMW := middleware.Auth(authService)

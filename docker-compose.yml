@@ -29,10 +29,6 @@ services:
     volumes:
       - redisdata:/data
 
-volumes:
-  pgdata:
-  redisdata:
-
   # ─── Centrifugo (WebSocket server) ──────────
   centrifugo:
     image: centrifugo/centrifugo:v5
@@ -46,4 +42,22 @@ volumes:
     depends_on:
       - redis
 
-  
+  # ─── MinIO (S3-compatible storage) ──────────
+  minio:
+    image: minio/minio:latest
+    container_name: vortex-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: vortex_minio
+      MINIO_ROOT_PASSWORD: vortex_minio_dev
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
