@@ -1,0 +1,381 @@
+package messaging
+
+import (
+	"encoding/json"
+	"errors"
+	"log"
+	"net/http"
+	"strconv"
+
+	// Замени на свой module path из go.mod
+	"github.com/yngnoise/vortex/internal/auth"
+)
+
+// ────────────────────────────────────────────────────────────
+// Handler
+// ────────────────────────────────────────────────────────────
+
+type Handler struct {
+	service *Service
+}
+
+func NewHandler(service *Service) *Handler {
+	return &Handler{service: service}
+}
+
+// RegisterRoutes подключает все messaging-эндпоинты.
+// Все требуют авторизации (auth middleware применяется в main.go).
+func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+	// Conversations
+	mux.HandleFunc("POST /api/conversations/direct", h.handleCreateDirect)
+	mux.HandleFunc("POST /api/conversations/group", h.handleCreateGroup)
+	mux.HandleFunc("GET /api/conversations", h.handleListConversations)
+	mux.HandleFunc("GET /api/conversations/{id}", h.handleGetConversation)
+	mux.HandleFunc("GET /api/conversations/{id}/members", h.handleGetMembers)
+
+	// Messages
+	mux.HandleFunc("POST /api/conversations/{id}/messages", h.handleSendMessage)
+	mux.HandleFunc("GET /api/conversations/{id}/messages", h.handleGetMessages)
+	mux.HandleFunc("POST /api/conversations/{id}/read", h.handleMarkAsRead)
+}
+
+// ────────────────────────────────────────────────────────────
+// Типы запросов
+// ────────────────────────────────────────────────────────────
+
+type createDirectRequest struct {
+	OtherUserID string `json:"other_user_id"`
+}
+
+type createGroupRequest struct {
+	Title     string   `json:"title"`
+	MemberIDs []string `json:"member_ids"`
+}
+
+type sendMessageRequest struct {
+	Content     string  `json:"content"`
+	ContentType string  `json:"content_type"` // "text", "image", и т.д.
+	ReplyToID   *string `json:"reply_to_id"`
+}
+
+type markAsReadRequest struct {
+	MessageID string `json:"message_id"`
+}
+
+// ────────────────────────────────────────────────────────────
+// POST /api/conversations/direct
+// ────────────────────────────────────────────────────────────
+// Создаёт личный чат с другим пользователем.
+// Если чат уже существует — вернёт его.
+//
+// Тело: {"other_user_id": "uuid-собеседника"}
+// Ответ: объект Conversation
+
+func (h *Handler) handleCreateDirect(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	var req createDirectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", "INVALID_BODY")
+		return
+	}
+	if req.OtherUserID == "" {
+		writeError(w, http.StatusBadRequest, "other_user_id is required", "MISSING_FIELD")
+		return
+	}
+
+	conv, err := h.service.CreateDirect(r.Context(), claims.UserID, req.OtherUserID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrSelfChat):
+			writeError(w, http.StatusBadRequest, "cannot create chat with yourself", "SELF_CHAT")
+		default:
+			log.Printf("create direct error: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, conv)
+}
+
+// ────────────────────────────────────────────────────────────
+// POST /api/conversations/group
+// ────────────────────────────────────────────────────────────
+// Создаёт групповой чат.
+//
+// Тело: {"title": "Название", "member_ids": ["uuid1", "uuid2"]}
+// Ответ: объект Conversation
+
+func (h *Handler) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	var req createGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", "INVALID_BODY")
+		return
+	}
+
+	conv, err := h.service.CreateGroup(r.Context(), claims.UserID, req.Title, req.MemberIDs)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNoTitle):
+			writeError(w, http.StatusBadRequest, "title is required", "MISSING_TITLE")
+		case errors.Is(err, ErrTooFewMembers):
+			writeError(w, http.StatusBadRequest, "at least one member required", "TOO_FEW_MEMBERS")
+		default:
+			log.Printf("create group error: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, conv)
+}
+
+// ────────────────────────────────────────────────────────────
+// GET /api/conversations?limit=50&offset=0
+// ────────────────────────────────────────────────────────────
+// Список чатов текущего пользователя (главный экран мессенджера).
+// Каждый чат содержит последнее сообщение и счётчик непрочитанных.
+
+func (h *Handler) handleListConversations(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	limit := queryInt(r, "limit", 50)
+	offset := queryInt(r, "offset", 0)
+
+	previews, err := h.service.GetConversations(r.Context(), claims.UserID, limit, offset)
+	if err != nil {
+		log.Printf("list conversations error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+
+	// Возвращаем пустой массив, а не null
+	if previews == nil {
+		previews = []ConversationPreview{}
+	}
+
+	writeJSON(w, http.StatusOK, previews)
+}
+
+// ────────────────────────────────────────────────────────────
+// GET /api/conversations/{id}
+// ────────────────────────────────────────────────────────────
+// Информация о конкретном чате.
+
+func (h *Handler) handleGetConversation(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	convID := r.PathValue("id")
+	if convID == "" {
+		writeError(w, http.StatusBadRequest, "conversation id required", "MISSING_ID")
+		return
+	}
+
+	conv, err := h.service.GetConversation(r.Context(), convID, claims.UserID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotMember):
+			writeError(w, http.StatusForbidden, "not a member of this conversation", "NOT_MEMBER")
+		case errors.Is(err, ErrConversationNotFound):
+			writeError(w, http.StatusNotFound, "conversation not found", "NOT_FOUND")
+		default:
+			log.Printf("get conversation error: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, conv)
+}
+
+// ────────────────────────────────────────────────────────────
+// GET /api/conversations/{id}/members
+// ────────────────────────────────────────────────────────────
+// Список участников чата.
+
+func (h *Handler) handleGetMembers(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	convID := r.PathValue("id")
+	members, err := h.service.GetMembers(r.Context(), convID, claims.UserID)
+	if err != nil {
+		if errors.Is(err, ErrNotMember) {
+			writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
+			return
+		}
+		log.Printf("get members error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, members)
+}
+
+// ────────────────────────────────────────────────────────────
+// POST /api/conversations/{id}/messages
+// ────────────────────────────────────────────────────────────
+// Отправить сообщение в чат.
+//
+// Тело: {"content": "Привет!", "content_type": "text"}
+// Ответ: объект Message
+
+func (h *Handler) handleSendMessage(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	convID := r.PathValue("id")
+	var req sendMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", "INVALID_BODY")
+		return
+	}
+
+	msg, err := h.service.SendMessage(
+		r.Context(), convID, claims.UserID,
+		req.Content, req.ContentType, req.ReplyToID,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrEmptyMessage):
+			writeError(w, http.StatusBadRequest, "message cannot be empty", "EMPTY_MESSAGE")
+		case errors.Is(err, ErrNotMember):
+			writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
+		default:
+			log.Printf("send message error: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, msg)
+}
+
+// ────────────────────────────────────────────────────────────
+// GET /api/conversations/{id}/messages?limit=50&before=uuid
+// ────────────────────────────────────────────────────────────
+// История сообщений с cursor-пагинацией.
+// before — ID сообщения, от которого листаем назад.
+// Без before — последние сообщения.
+
+func (h *Handler) handleGetMessages(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	convID := r.PathValue("id")
+	limit := queryInt(r, "limit", 50)
+
+	var before *string
+	if b := r.URL.Query().Get("before"); b != "" {
+		before = &b
+	}
+
+	messages, err := h.service.GetMessages(r.Context(), convID, claims.UserID, limit, before)
+	if err != nil {
+		if errors.Is(err, ErrNotMember) {
+			writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
+			return
+		}
+		log.Printf("get messages error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+
+	if messages == nil {
+		messages = []Message{}
+	}
+
+	writeJSON(w, http.StatusOK, messages)
+}
+
+// ────────────────────────────────────────────────────────────
+// POST /api/conversations/{id}/read
+// ────────────────────────────────────────────────────────────
+// Отметить сообщения прочитанными.
+// Тело: {"message_id": "uuid-последнего-прочитанного"}
+
+func (h *Handler) handleMarkAsRead(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	convID := r.PathValue("id")
+	var req markAsReadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", "INVALID_BODY")
+		return
+	}
+	if req.MessageID == "" {
+		writeError(w, http.StatusBadRequest, "message_id required", "MISSING_FIELD")
+		return
+	}
+
+	if err := h.service.MarkAsRead(r.Context(), convID, claims.UserID, req.MessageID); err != nil {
+		if errors.Is(err, ErrNotMember) {
+			writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
+			return
+		}
+		log.Printf("mark as read error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ────────────────────────────────────────────────────────────
+// Хелперы
+// ────────────────────────────────────────────────────────────
+
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(data)
+}
+
+func writeError(w http.ResponseWriter, status int, message, code string) {
+	writeJSON(w, status, map[string]string{"error": message, "code": code})
+}
+
+// queryInt извлекает int query-параметр с дефолтом.
+func queryInt(r *http.Request, key string, defaultVal int) int {
+	s := r.URL.Query().Get(key)
+	if s == "" {
+		return defaultVal
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return defaultVal
+	}
+	return v
+}

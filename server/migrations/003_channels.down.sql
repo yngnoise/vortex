@@ -1,0 +1,12 @@
+DROP TRIGGER IF EXISTS trg_channel_member_count ON channel_members;
+DROP FUNCTION IF EXISTS update_channel_member_count;
+DROP TRIGGER IF EXISTS trg_channels_updated_at ON channels;
+DROP TABLE IF EXISTS channel_reactions CASCADE;
+DROP TABLE IF EXISTS channel_attachments CASCADE;
+DROP TABLE IF EXISTS threads CASCADE;
+DROP TABLE IF EXISTS channel_messages CASCADE;
+DROP TABLE IF EXISTS channel_members CASCADE;
+DROP TABLE IF EXISTS channel_roles CASCADE;
+DROP TABLE IF EXISTS channel_rooms CASCADE;
+DROP TABLE IF EXISTS channel_categories CASCADE;
+DROP TABLE IF EXISTS channels CASCADE;

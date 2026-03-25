@@ -1,0 +1,49 @@
+services:
+  # ─── PostgreSQL ─────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: vortex-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vortex
+      POSTGRES_USER: vortex
+      POSTGRES_PASSWORD: vortex_dev_2024
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vortex"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ─── Redis ──────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: vortex-redis
+    restart: unless-stopped
+    command: redis-server --requirepass vortex_redis_dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+volumes:
+  pgdata:
+  redisdata:
+
+  # ─── Centrifugo (WebSocket server) ──────────
+  centrifugo:
+    image: centrifugo/centrifugo:v5
+    container_name: vortex-centrifugo
+    restart: unless-stopped
+    command: centrifugo -c config.json
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./deploy/centrifugo/config.json:/centrifugo/config.json:ro
+    depends_on:
+      - redis
+
+  
