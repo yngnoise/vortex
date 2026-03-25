@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 
-	// Замени на свой module path из go.mod
 	"github.com/yngnoise/vortex/internal/auth"
 )
 
@@ -32,6 +31,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/conversations", h.handleListConversations)
 	mux.HandleFunc("GET /api/conversations/{id}", h.handleGetConversation)
 	mux.HandleFunc("GET /api/conversations/{id}/members", h.handleGetMembers)
+	mux.HandleFunc("PATCH /api/conversations/{id}/messages/{msgId}", h.handleEditMessage)
+	mux.HandleFunc("DELETE /api/conversations/{id}/messages/{msgId}", h.handleDeleteMessage)
 
 	// Messages
 	mux.HandleFunc("POST /api/conversations/{id}/messages", h.handleSendMessage)
@@ -60,6 +61,10 @@ type sendMessageRequest struct {
 
 type markAsReadRequest struct {
 	MessageID string `json:"message_id"`
+}
+
+type editMessageRequest struct {
+	Content string `json:"content"`
 }
 
 // ────────────────────────────────────────────────────────────
@@ -356,6 +361,79 @@ func (h *Handler) handleMarkAsRead(w http.ResponseWriter, r *http.Request) {
 // ────────────────────────────────────────────────────────────
 // Хелперы
 // ────────────────────────────────────────────────────────────
+
+// ────────────────────────────────────────────────────────────
+// PATCH /api/conversations/{id}/messages/{msgId}
+// ────────────────────────────────────────────────────────────
+// Редактировать своё сообщение.
+// Тело: {"content": "Новый текст"}
+
+func (h *Handler) handleEditMessage(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	convID := r.PathValue("id")
+	msgID := r.PathValue("msgId")
+
+	var req editMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", "INVALID_BODY")
+		return
+	}
+
+	msg, err := h.service.EditMessage(r.Context(), convID, msgID, claims.UserID, req.Content)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrEmptyMessage):
+			writeError(w, http.StatusBadRequest, "content cannot be empty", "EMPTY_MESSAGE")
+		case errors.Is(err, ErrNotMember):
+			writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
+		case errors.Is(err, ErrMessageNotFound):
+			writeError(w, http.StatusNotFound, "message not found or not yours", "NOT_FOUND")
+		default:
+			log.Printf("edit message error: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, msg)
+}
+
+// ────────────────────────────────────────────────────────────
+// DELETE /api/conversations/{id}/messages/{msgId}
+// ────────────────────────────────────────────────────────────
+// Удалить своё сообщение (мягкое удаление).
+
+func (h *Handler) handleDeleteMessage(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	convID := r.PathValue("id")
+	msgID := r.PathValue("msgId")
+
+	err := h.service.DeleteMessage(r.Context(), convID, msgID, claims.UserID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotMember):
+			writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
+		case errors.Is(err, ErrMessageNotFound):
+			writeError(w, http.StatusNotFound, "message not found or not yours", "NOT_FOUND")
+		default:
+			log.Printf("delete message error: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")

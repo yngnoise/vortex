@@ -126,6 +126,7 @@ func authRouter(mux *http.ServeMux, authMW func(http.Handler) http.Handler) http
 	publicPaths := map[string]bool{
 		"POST /api/auth/register": true,
 		"POST /api/auth/login":    true,
+		"POST /api/auth/refresh":  true,
 		"GET /api/health":         true,
 	}
 

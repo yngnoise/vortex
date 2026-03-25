@@ -476,3 +476,61 @@ func (r *Repository) MarkAsRead(ctx context.Context, conversationID, userID, mes
 	`, conversationID, userID, messageID)
 	return err
 }
+
+// ──────────────────────────────────────────────────────
+// ДОБАВЬ ЭТИ МЕТОДЫ В КОНЕЦ messaging/repository.go
+// (после метода MarkAsRead)
+// ──────────────────────────────────────────────────────
+
+// EditMessage обновляет текст сообщения.
+// Проверяет что сообщение принадлежит отправителю.
+// Устанавливает edited_at — клиент покажет "(изменено)".
+func (r *Repository) EditMessage(ctx context.Context, messageID, senderID, newContent string) (*Message, error) {
+	msg := &Message{}
+	var senderUsername, senderName string
+
+	err := r.db.QueryRow(ctx, `
+		UPDATE messages
+		SET content_encrypted = $3, edited_at = NOW()
+		WHERE id = $1 AND sender_id = $2 AND deleted_at IS NULL
+		RETURNING id, conversation_id, sender_id,
+		          content_encrypted, content_type,
+		          reply_to_id, created_at, edited_at
+	`, messageID, senderID, []byte(newContent)).Scan(
+		&msg.ID, &msg.ConversationID, &msg.SenderID,
+		&msg.ContentEncrypted, &msg.ContentType,
+		&msg.ReplyToID, &msg.CreatedAt, &msg.EditedAt,
+	)
+	if err != nil {
+		return nil, ErrMessageNotFound
+	}
+
+	// Достаём имя отправителя
+	r.db.QueryRow(ctx, `
+		SELECT username, display_name FROM users WHERE id = $1
+	`, senderID).Scan(&senderUsername, &senderName)
+
+	msg.SenderUsername = senderUsername
+	msg.SenderName = senderName
+	msg.Content = string(msg.ContentEncrypted)
+
+	return msg, nil
+}
+
+// DeleteMessage мягко удаляет сообщение (устанавливает deleted_at).
+// Сообщение остаётся в базе, но не показывается в истории.
+// Проверяет что сообщение принадлежит отправителю.
+func (r *Repository) DeleteMessage(ctx context.Context, messageID, senderID string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE messages
+		SET deleted_at = NOW()
+		WHERE id = $1 AND sender_id = $2 AND deleted_at IS NULL
+	`, messageID, senderID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrMessageNotFound
+	}
+	return nil
+}

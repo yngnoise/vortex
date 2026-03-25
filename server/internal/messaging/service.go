@@ -156,3 +156,68 @@ func (s *Service) MarkAsRead(ctx context.Context, conversationID, userID, messag
 	}
 	return s.repo.MarkAsRead(ctx, conversationID, userID, messageID)
 }
+
+// ──────────────────────────────────────────────────────
+// ДОБАВЬ ЭТИ МЕТОДЫ В КОНЕЦ messaging/service.go
+// (после метода MarkAsRead)
+// ──────────────────────────────────────────────────────
+
+// EditMessage редактирует сообщение.
+// Только автор может редактировать своё сообщение.
+func (s *Service) EditMessage(ctx context.Context, conversationID, messageID, userID, newContent string) (*Message, error) {
+	if newContent == "" {
+		return nil, ErrEmptyMessage
+	}
+
+	isMember, err := s.repo.IsMember(ctx, conversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !isMember {
+		return nil, ErrNotMember
+	}
+
+	msg, err := s.repo.EditMessage(ctx, messageID, userID, newContent)
+	if err != nil {
+		return nil, err
+	}
+
+	// Уведомляем подписчиков об изменении
+	if s.rt != nil {
+		go s.rt.Publish("chat:"+conversationID, map[string]interface{}{
+			"type": "message_edited",
+			"data": msg,
+		})
+	}
+
+	return msg, nil
+}
+
+// DeleteMessage мягко удаляет сообщение.
+// Только автор может удалить своё сообщение.
+func (s *Service) DeleteMessage(ctx context.Context, conversationID, messageID, userID string) error {
+	isMember, err := s.repo.IsMember(ctx, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if !isMember {
+		return ErrNotMember
+	}
+
+	if err := s.repo.DeleteMessage(ctx, messageID, userID); err != nil {
+		return err
+	}
+
+	// Уведомляем подписчиков об удалении
+	if s.rt != nil {
+		go s.rt.Publish("chat:"+conversationID, map[string]interface{}{
+			"type": "message_deleted",
+			"data": map[string]string{
+				"message_id":      messageID,
+				"conversation_id": conversationID,
+			},
+		})
+	}
+
+	return nil
+}

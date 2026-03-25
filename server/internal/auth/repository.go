@@ -262,3 +262,75 @@ func (r *Repository) GetUserPublicProfile(ctx context.Context, userID string) (*
 	}
 	return user, nil
 }
+
+// ──────────────────────────────────────────────────────
+// ДОБАВЬ ЭТОТ МЕТОД В КОНЕЦ auth/repository.go
+// ──────────────────────────────────────────────────────
+
+// FindSessionByToken ищет сессию по хешу refresh-токена.
+// Проверяет что сессия не истекла.
+// Используется при обновлении токенов (POST /api/auth/refresh).
+func (r *Repository) FindSessionByToken(ctx context.Context, tokenHash []byte) (*Session, error) {
+	session := &Session{}
+	err := r.db.QueryRow(ctx, `
+		SELECT id, user_id, device_name, device_type,
+		       refresh_token_hash, created_at, expires_at
+		FROM sessions
+		WHERE refresh_token_hash = $1
+		  AND expires_at > NOW()
+	`, tokenHash).Scan(
+		&session.ID, &session.UserID, &session.DeviceName,
+		&session.DeviceType, &session.RefreshTokenHash,
+		&session.CreatedAt, &session.ExpiresAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrInvalidSession
+	}
+	return session, err
+}
+
+// UpdateSessionToken обновляет refresh-токен существующей сессии.
+// Старый токен перестаёт работать (rotation).
+// Это защита: если refresh-токен украли, при первом использовании
+// оригинальным пользователем старый токен инвалидируется.
+func (r *Repository) UpdateSessionToken(ctx context.Context, sessionID string, newTokenHash []byte, newExpiresAt time.Time) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE sessions
+		SET refresh_token_hash = $2, expires_at = $3
+		WHERE id = $1
+	`, sessionID, newTokenHash, newExpiresAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrInvalidSession
+	}
+	return nil
+}
+
+// UpdateProfile обновляет профиль пользователя.
+// Обновляет только непустые поля — если display_name пустой,
+// оставляет старое значение.
+func (r *Repository) UpdateProfile(ctx context.Context, userID, displayName, bio, avatarURL string) (*User, error) {
+	user := &User{}
+
+	err := r.db.QueryRow(ctx, `
+		UPDATE users SET
+			display_name = CASE WHEN $2 = '' THEN display_name ELSE $2 END,
+			bio = CASE WHEN $3 = '' THEN bio ELSE $3 END,
+			avatar_url = CASE WHEN $4 = '' THEN avatar_url ELSE $4 END,
+			updated_at = NOW()
+		WHERE id = $1 AND status = 'active'
+		RETURNING id, username, display_name, email, phone,
+		          avatar_url, public_key, status, bio, last_seen_at, created_at
+	`, userID, displayName, bio, avatarURL).Scan(
+		&user.ID, &user.Username, &user.DisplayName,
+		&user.Email, &user.Phone,
+		&user.AvatarURL, &user.PublicKey,
+		&user.Status, &user.Bio, &user.LastSeenAt, &user.CreatedAt,
+	)
+	if err != nil {
+		return nil, ErrUserNotFound
+	}
+	return user, nil
+}

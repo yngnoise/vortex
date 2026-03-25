@@ -30,6 +30,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/login", h.handleLogin)
 	mux.HandleFunc("POST /api/auth/logout", h.handleLogout)
 	mux.HandleFunc("GET /api/auth/me", h.handleMe)
+	mux.HandleFunc("POST /api/auth/refresh", h.handleRefresh)
+	mux.HandleFunc("PATCH /api/auth/me", h.handleUpdateProfile)
 }
 
 // ────────────────────────────────────────────────────────────
@@ -60,6 +62,16 @@ type authResponse struct {
 type errorResponse struct {
 	Error string `json:"error"`
 	Code  string `json:"code,omitempty"`
+}
+
+type updateProfileRequest struct {
+	DisplayName string `json:"display_name"`
+	Bio         string `json:"bio"`
+	AvatarURL   string `json:"avatar_url"` // URL из /api/media/avatar
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
 }
 
 // ────────────────────────────────────────────────────────────
@@ -127,6 +139,57 @@ func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, authResponse{User: user, Tokens: tokens})
+}
+
+// ────────────────────────────────────────────────────────────
+// PATCH /api/auth/me
+// ────────────────────────────────────────────────────────────
+// Обновить профиль текущего пользователя.
+// Обновляет только переданные непустые поля.
+//
+// Тело: {"display_name": "Новое имя", "bio": "Обо мне"}
+// Ответ: обновлённый объект User
+//
+// Пример:
+// curl -X PATCH http://localhost:8080/api/auth/me \
+//   -H "Authorization: Bearer TOKEN" \
+//   -H "Content-Type: application/json" \
+//   -d '{"display_name": "Alice W.", "bio": "Flutter dev"}'
+
+func (h *Handler) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
+	claims := GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	var req updateProfileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", "INVALID_BODY")
+		return
+	}
+
+	// Валидация
+	if req.DisplayName != "" && len(req.DisplayName) > 64 {
+		writeError(w, http.StatusBadRequest, "display_name too long (max 64)", "INVALID_NAME")
+		return
+	}
+	if len(req.Bio) > 500 {
+		writeError(w, http.StatusBadRequest, "bio too long (max 500)", "INVALID_BIO")
+		return
+	}
+
+	user, err := h.service.repo.UpdateProfile(r.Context(), claims.UserID, req.DisplayName, req.Bio, req.AvatarURL)
+	if err != nil {
+		if errors.Is(err, ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "user not found", "NOT_FOUND")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, user)
 }
 
 // ────────────────────────────────────────────────────────────
@@ -227,6 +290,44 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 // ────────────────────────────────────────────────────────────
 // Хелперы
 // ────────────────────────────────────────────────────────────
+
+// ────────────────────────────────────────────────────────────
+// POST /api/auth/refresh
+// ────────────────────────────────────────────────────────────
+// Обновляет пару токенов. Клиент шлёт refresh_token,
+// получает новые access + refresh.
+//
+// Этот эндпоинт НЕ требует access token в заголовке
+// (он может быть уже истёкшим — для того и refresh).
+// Но требует валидный refresh_token в теле.
+//
+// Пример:
+// curl -X POST http://localhost:8080/api/auth/refresh \
+//   -H "Content-Type: application/json" \
+//   -d '{"refresh_token": "abc123..."}'
+//
+// Ответ: {"access_token": "...", "refresh_token": "новый...", "expires_at": "..."}
+
+func (h *Handler) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	var req refreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", "INVALID_BODY")
+		return
+	}
+
+	if req.RefreshToken == "" {
+		writeError(w, http.StatusBadRequest, "refresh_token is required", "MISSING_TOKEN")
+		return
+	}
+
+	tokens, err := h.service.RefreshTokens(r.Context(), req.RefreshToken)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid or expired refresh token", "INVALID_REFRESH")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, tokens)
+}
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")

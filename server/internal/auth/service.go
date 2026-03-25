@@ -253,3 +253,70 @@ func (s *Service) createSession(
 		ExpiresAt:    accessExpiresAt,
 	}, nil
 }
+
+// ──────────────────────────────────────────────────────
+// ДОБАВЬ ЭТОТ МЕТОД В auth/service.go
+// (после метода createSession, в конец файла)
+// ──────────────────────────────────────────────────────
+
+// RefreshTokens принимает refresh-токен и возвращает новую пару.
+//
+// Как работает token rotation:
+// 1. Клиент шлёт refresh_token.
+// 2. Мы хешируем его (SHA-256) и ищем в базе.
+// 3. Если нашли и сессия не истекла — генерируем НОВЫЙ refresh.
+// 4. Обновляем хеш в базе (старый перестаёт работать).
+// 5. Генерируем новый access token.
+// 6. Возвращаем новую пару.
+//
+// Зачем rotation: если refresh-токен украли, при следующем
+// обновлении оригинальным пользователем старый хеш заменится
+// и украденный токен перестанет работать.
+func (s *Service) RefreshTokens(ctx context.Context, refreshToken string) (*TokenPair, error) {
+	// 1. Хешируем присланный токен
+	hash := sha256.Sum256([]byte(refreshToken))
+
+	// 2. Ищем сессию
+	session, err := s.repo.FindSessionByToken(ctx, hash[:])
+	if err != nil {
+		return nil, ErrInvalidToken
+	}
+
+	// 3. Генерируем новый refresh token
+	newRefreshBytes := make([]byte, 32)
+	if _, err := rand.Read(newRefreshBytes); err != nil {
+		return nil, fmt.Errorf("generate refresh token: %w", err)
+	}
+	newRefreshToken := hex.EncodeToString(newRefreshBytes)
+	newHash := sha256.Sum256([]byte(newRefreshToken))
+	newExpiresAt := time.Now().Add(s.cfg.RefreshExpires)
+
+	// 4. Обновляем хеш в базе (rotation)
+	if err := s.repo.UpdateSessionToken(ctx, session.ID, newHash[:], newExpiresAt); err != nil {
+		return nil, fmt.Errorf("rotate token: %w", err)
+	}
+
+	// 5. Генерируем новый access token
+	accessExpiresAt := time.Now().Add(s.cfg.AccessExpires)
+	claims := &Claims{
+		UserID:    session.UserID,
+		SessionID: session.ID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(accessExpiresAt),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "vortex",
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	accessToken, err := token.SignedString([]byte(s.cfg.Secret))
+	if err != nil {
+		return nil, fmt.Errorf("sign access token: %w", err)
+	}
+
+	return &TokenPair{
+		AccessToken:  accessToken,
+		RefreshToken: newRefreshToken,
+		ExpiresAt:    accessExpiresAt,
+	}, nil
+}
