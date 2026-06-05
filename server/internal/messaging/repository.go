@@ -60,8 +60,32 @@ type Message struct {
 	Content          string     `json:"content"` // расшифрованный текст для ответа
 	ContentType      string     `json:"content_type"`
 	ReplyToID        *string    `json:"reply_to_id,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	EditedAt         *time.Time `json:"edited_at,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
+	EditedAt         *time.Time   `json:"edited_at,omitempty"`
+	Attachments      []Attachment `json:"attachments,omitempty"`
+}
+
+// Attachment — вложение сообщения (строка таблицы attachments).
+type Attachment struct {
+	ID           string    `json:"id"`
+	MessageID    string    `json:"message_id"`
+	FileType     string    `json:"file_type"`
+	FileURL      string    `json:"file_url"`
+	FileSize     int64     `json:"file_size"`
+	FileName     *string   `json:"file_name,omitempty"`
+	MimeType     *string   `json:"mime_type,omitempty"`
+	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// ResolvedAttachment — вложение, уже проверенное сервисом
+// (метаданные взяты из хранилища). Передаётся в репозиторий для вставки.
+type ResolvedAttachment struct {
+	FileType string
+	FileURL  string
+	FileSize int64
+	FileName string // "" → NULL
+	MimeType string // "" → NULL
 }
 
 // ConversationPreview — элемент списка чатов.
@@ -371,11 +395,17 @@ func (r *Repository) GetMembers(ctx context.Context, conversationID string) ([]C
 // SendMessage сохраняет новое сообщение в базу.
 // content приходит как строка, мы конвертируем в []byte.
 // Когда добавим E2E — клиент будет слать уже зашифрованные байты.
-func (r *Repository) SendMessage(ctx context.Context, conversationID, senderID, content, contentType string, replyToID *string) (*Message, error) {
+func (r *Repository) SendMessage(ctx context.Context, conversationID, senderID, content, contentType string, replyToID *string, atts []ResolvedAttachment) (*Message, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	msg := &Message{}
 	var senderUsername, senderName string
 
-	err := r.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		WITH inserted AS (
 			INSERT INTO messages (conversation_id, sender_id, content_encrypted, content_type, reply_to_id)
 			VALUES ($1, $2, $3, $4, $5)
@@ -395,6 +425,29 @@ func (r *Repository) SendMessage(ctx context.Context, conversationID, senderID, 
 		&msg.ReplyToID, &msg.CreatedAt, &msg.EditedAt,
 	)
 	if err != nil {
+		return nil, err
+	}
+
+	// Вложения вставляем в той же транзакции — либо сообщение со всеми
+	// вложениями, либо ничего.
+	for _, a := range atts {
+		var att Attachment
+		err = tx.QueryRow(ctx, `
+			INSERT INTO attachments (message_id, file_type, file_url, file_size, file_name, mime_type)
+			VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''))
+			RETURNING id, message_id, file_type, file_url, file_size,
+			          file_name, mime_type, thumbnail_url, created_at
+		`, msg.ID, a.FileType, a.FileURL, a.FileSize, a.FileName, a.MimeType).Scan(
+			&att.ID, &att.MessageID, &att.FileType, &att.FileURL, &att.FileSize,
+			&att.FileName, &att.MimeType, &att.ThumbnailURL, &att.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		msg.Attachments = append(msg.Attachments, att)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
@@ -461,8 +514,56 @@ func (r *Repository) GetMessages(ctx context.Context, conversationID string, lim
 		m.Content = string(m.ContentEncrypted)
 		messages = append(messages, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close() // освобождаем соединение перед догрузкой вложений
 
-	return messages, rows.Err()
+	if err := r.attachToMessages(ctx, messages); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+// attachToMessages догружает вложения для набора сообщений одним запросом
+// и раскладывает их по соответствующим сообщениям (без N+1).
+func (r *Repository) attachToMessages(ctx context.Context, msgs []Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	ids := make([]string, len(msgs))
+	idx := make(map[string]int, len(msgs))
+	for i, m := range msgs {
+		ids[i] = m.ID
+		idx[m.ID] = i
+	}
+
+	rows, err := r.db.Query(ctx, `
+		SELECT id, message_id, file_type, file_url, file_size,
+		       file_name, mime_type, thumbnail_url, created_at
+		FROM attachments
+		WHERE message_id = ANY($1::uuid[])
+		ORDER BY created_at
+	`, ids)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var a Attachment
+		if err := rows.Scan(
+			&a.ID, &a.MessageID, &a.FileType, &a.FileURL, &a.FileSize,
+			&a.FileName, &a.MimeType, &a.ThumbnailURL, &a.CreatedAt,
+		); err != nil {
+			return err
+		}
+		if i, ok := idx[a.MessageID]; ok {
+			msgs[i].Attachments = append(msgs[i].Attachments, a)
+		}
+	}
+	return rows.Err()
 }
 
 // MarkAsRead обновляет last_read_msg_id для пользователя в чате.

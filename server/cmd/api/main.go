@@ -57,7 +57,7 @@ func main() {
 
 	// ── 5. Messaging модуль ──────────────────
 	msgRepo := messaging.NewRepository(db)
-	msgService := messaging.NewService(msgRepo, rtClient)
+	msgService := messaging.NewService(msgRepo, rtClient, storage)
 	msgHandler := messaging.NewHandler(msgService)
 
 	// ── 6. Channels модуль ───────────────────

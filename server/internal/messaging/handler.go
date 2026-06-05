@@ -54,9 +54,10 @@ type createGroupRequest struct {
 }
 
 type sendMessageRequest struct {
-	Content     string  `json:"content"`
-	ContentType string  `json:"content_type"` // "text", "image", и т.д.
-	ReplyToID   *string `json:"reply_to_id"`
+	Content     string            `json:"content"`
+	ContentType string            `json:"content_type"` // "text", "image", и т.д.
+	ReplyToID   *string           `json:"reply_to_id"`
+	Attachments []AttachmentInput `json:"attachments"` // ссылки на загруженные файлы
 }
 
 type markAsReadRequest struct {
@@ -263,12 +264,18 @@ func (h *Handler) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 
 	msg, err := h.service.SendMessage(
 		r.Context(), convID, claims.UserID,
-		req.Content, req.ContentType, req.ReplyToID,
+		req.Content, req.ContentType, req.ReplyToID, req.Attachments,
 	)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrEmptyMessage):
 			writeError(w, http.StatusBadRequest, "message cannot be empty", "EMPTY_MESSAGE")
+		case errors.Is(err, ErrContentTooLong):
+			writeError(w, http.StatusBadRequest, "message too long (max 8000 chars)", "CONTENT_TOO_LONG")
+		case errors.Is(err, ErrTooManyAttachments):
+			writeError(w, http.StatusBadRequest, "too many attachments (max 10)", "TOO_MANY_ATTACHMENTS")
+		case errors.Is(err, ErrInvalidAttachment):
+			writeError(w, http.StatusBadRequest, "invalid attachment", "INVALID_ATTACHMENT")
 		case errors.Is(err, ErrNotMember):
 			writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
 		default:

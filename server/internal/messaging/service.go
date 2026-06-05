@@ -3,6 +3,8 @@ package messaging
 import (
 	"context"
 	"errors"
+	"strings"
+	"unicode/utf8"
 )
 
 // ────────────────────────────────────────────────────────────
@@ -10,11 +12,27 @@ import (
 // ────────────────────────────────────────────────────────────
 
 var (
-	ErrEmptyMessage  = errors.New("message content cannot be empty")
-	ErrSelfChat      = errors.New("cannot create chat with yourself")
-	ErrNoTitle       = errors.New("group chat requires a title")
-	ErrTooFewMembers = errors.New("group chat requires at least one other member")
+	ErrEmptyMessage       = errors.New("message content cannot be empty")
+	ErrSelfChat           = errors.New("cannot create chat with yourself")
+	ErrNoTitle            = errors.New("group chat requires a title")
+	ErrTooFewMembers      = errors.New("group chat requires at least one other member")
+	ErrContentTooLong     = errors.New("message content too long")
+	ErrTooManyAttachments = errors.New("too many attachments")
+	ErrInvalidAttachment  = errors.New("invalid attachment")
 )
+
+const (
+	maxContentLen  = 8000 // макс. длина текста сообщения (в рунах)
+	maxAttachments = 10   // макс. число вложений в одном сообщении
+)
+
+// AttachmentInput — ссылка на ранее загруженный файл (POST /api/media/upload).
+// Клиент присылает только key и имя файла; размер и MIME-тип сервер
+// берёт из хранилища, чтобы не доверять метаданным клиента.
+type AttachmentInput struct {
+	Key      string `json:"key"`
+	FileName string `json:"file_name"`
+}
 
 // ────────────────────────────────────────────────────────────
 // RTClient — интерфейс для публикации real-time событий.
@@ -27,17 +45,25 @@ type RTClient interface {
 	Publish(channel string, event interface{}) error
 }
 
+// AttachmentStore резолвит загруженные файлы при привязке к сообщению.
+// Реализуется media.Storage. Размер и MIME-тип берутся из хранилища —
+// данным клиента не доверяем.
+type AttachmentStore interface {
+	Stat(ctx context.Context, key string) (url string, size int64, contentType string, err error)
+}
+
 // ────────────────────────────────────────────────────────────
 // Service
 // ────────────────────────────────────────────────────────────
 
 type Service struct {
-	repo *Repository
-	rt   RTClient
+	repo  *Repository
+	rt    RTClient
+	store AttachmentStore
 }
 
-func NewService(repo *Repository, rt RTClient) *Service {
-	return &Service{repo: repo, rt: rt}
+func NewService(repo *Repository, rt RTClient, store AttachmentStore) *Service {
+	return &Service{repo: repo, rt: rt, store: store}
 }
 
 // ────────────────────────────────────────────────────────────
@@ -97,12 +123,17 @@ func (s *Service) GetMembers(ctx context.Context, conversationID, userID string)
 // Messages
 // ────────────────────────────────────────────────────────────
 
-func (s *Service) SendMessage(ctx context.Context, conversationID, senderID, content, contentType string, replyToID *string) (*Message, error) {
-	if content == "" {
+func (s *Service) SendMessage(ctx context.Context, conversationID, senderID, content, contentType string, replyToID *string, attachments []AttachmentInput) (*Message, error) {
+	content = strings.TrimSpace(content)
+
+	if len(attachments) > maxAttachments {
+		return nil, ErrTooManyAttachments
+	}
+	if content == "" && len(attachments) == 0 {
 		return nil, ErrEmptyMessage
 	}
-	if contentType == "" {
-		contentType = "text"
+	if utf8.RuneCountInString(content) > maxContentLen {
+		return nil, ErrContentTooLong
 	}
 
 	isMember, err := s.repo.IsMember(ctx, conversationID, senderID)
@@ -113,7 +144,35 @@ func (s *Service) SendMessage(ctx context.Context, conversationID, senderID, con
 		return nil, ErrNotMember
 	}
 
-	msg, err := s.repo.SendMessage(ctx, conversationID, senderID, content, contentType, replyToID)
+	// Резолвим вложения из хранилища — URL/размер/тип берём оттуда,
+	// данным клиента не доверяем. key обязан начинаться с "messages/".
+	var resolved []ResolvedAttachment
+	for _, in := range attachments {
+		if s.store == nil || !strings.HasPrefix(in.Key, "messages/") {
+			return nil, ErrInvalidAttachment
+		}
+		url, size, mime, err := s.store.Stat(ctx, in.Key)
+		if err != nil {
+			return nil, ErrInvalidAttachment
+		}
+		resolved = append(resolved, ResolvedAttachment{
+			FileType: fileTypeForMime(mime),
+			FileURL:  url,
+			FileSize: size,
+			FileName: sanitizeFileName(in.FileName),
+			MimeType: mime,
+		})
+	}
+
+	if contentType == "" {
+		contentType = "text"
+	}
+	if len(resolved) > 0 {
+		// Тип сообщения определяется первым вложением.
+		contentType = messageTypeForAttachment(resolved[0].FileType)
+	}
+
+	msg, err := s.repo.SendMessage(ctx, conversationID, senderID, content, contentType, replyToID, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +187,45 @@ func (s *Service) SendMessage(ctx context.Context, conversationID, senderID, con
 	}
 
 	return msg, nil
+}
+
+// fileTypeForMime сопоставляет MIME-тип категории вложения
+// (значения совпадают с CHECK в таблице attachments).
+func fileTypeForMime(mime string) string {
+	switch {
+	case strings.HasPrefix(mime, "image/"):
+		return "image"
+	case strings.HasPrefix(mime, "video/"):
+		return "video"
+	case strings.HasPrefix(mime, "audio/"):
+		return "audio"
+	case mime == "application/pdf" || strings.HasPrefix(mime, "text/"):
+		return "document"
+	default:
+		return "other"
+	}
+}
+
+// messageTypeForAttachment определяет content_type сообщения
+// (значения совпадают с CHECK в таблице messages).
+func messageTypeForAttachment(fileType string) string {
+	switch fileType {
+	case "image", "video", "audio":
+		return fileType
+	default:
+		return "file"
+	}
+}
+
+// sanitizeFileName убирает разделители путей и ограничивает длину.
+func sanitizeFileName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ReplaceAll(name, "\\", "_")
+	if len(name) > 255 {
+		name = name[:255]
+	}
+	return name
 }
 
 func (s *Service) GetMessages(ctx context.Context, conversationID, userID string, limit int, before *string) ([]Message, error) {

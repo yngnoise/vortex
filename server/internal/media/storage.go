@@ -103,6 +103,18 @@ func (s *Storage) GetPublicURL(key string) string {
 	return fmt.Sprintf("http://localhost:9000/%s/%s", s.bucketName, key)
 }
 
+// Stat возвращает публичный URL, размер и MIME-тип объекта.
+// Используется messaging при привязке вложений к сообщениям:
+// размер и тип берутся из хранилища, а не из данных клиента.
+// Если объект не существует — возвращает ошибку.
+func (s *Storage) Stat(ctx context.Context, key string) (url string, size int64, contentType string, err error) {
+	info, err := s.client.StatObject(ctx, s.bucketName, key, minio.StatObjectOptions{})
+	if err != nil {
+		return "", 0, "", fmt.Errorf("stat object: %w", err)
+	}
+	return s.GetPublicURL(key), info.Size, info.ContentType, nil
+}
+
 // Delete удаляет файл из хранилища.
 func (s *Storage) Delete(ctx context.Context, key string) error {
 	return s.client.RemoveObject(ctx, s.bucketName, key, minio.RemoveObjectOptions{})
