@@ -38,6 +38,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/conversations/{id}/messages", h.handleSendMessage)
 	mux.HandleFunc("GET /api/conversations/{id}/messages", h.handleGetMessages)
 	mux.HandleFunc("POST /api/conversations/{id}/read", h.handleMarkAsRead)
+	mux.HandleFunc("POST /api/conversations/{id}/typing", h.handleTyping)
 }
 
 // ────────────────────────────────────────────────────────────
@@ -358,6 +359,33 @@ func (h *Handler) handleMarkAsRead(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("mark as read error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ────────────────────────────────────────────────────────────
+// POST /api/conversations/{id}/typing
+// ────────────────────────────────────────────────────────────
+// Эфемерное уведомление «печатает». Тело не требуется,
+// ничего не сохраняется — только публикация в realtime-канал.
+
+func (h *Handler) handleTyping(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	convID := r.PathValue("id")
+	if err := h.service.NotifyTyping(r.Context(), convID, claims.UserID); err != nil {
+		if errors.Is(err, ErrNotMember) {
+			writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
+			return
+		}
+		log.Printf("typing error: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
 		return
 	}

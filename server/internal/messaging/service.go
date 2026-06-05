@@ -319,3 +319,23 @@ func (s *Service) DeleteMessage(ctx context.Context, conversationID, messageID, 
 
 	return nil
 }
+
+// NotifyTyping публикует эфемерное событие «печатает» в канал чата.
+// Ничего не сохраняет; уведомлять может только участник чата.
+func (s *Service) NotifyTyping(ctx context.Context, conversationID, userID string) error {
+	isMember, err := s.repo.IsMember(ctx, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if !isMember {
+		return ErrNotMember
+	}
+
+	if s.rt != nil {
+		go s.rt.Publish("chat:"+conversationID, map[string]interface{}{
+			"type": "typing",
+			"data": map[string]string{"user_id": userID},
+		})
+	}
+	return nil
+}
