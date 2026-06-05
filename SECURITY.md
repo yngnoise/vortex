@@ -39,6 +39,11 @@ Legend:
       username-vs-email).
 - [ ] **Channel permission enforcement** (roles exist in schema, unused in code).
 - [ ] Trustworthy client IP (don't blindly trust `X-Forwarded-For`).
+- [ ] **Read receipts are self-reported:** `POST /conversations/{id}/read` is
+      driven by the client, so a user could under-report having read a message.
+      Fine for MVP; no real anti-spoofing until it matters.
+- [ ] **Typing/read events** have no per-user rate limit (publish is membership-
+      gated but a member could spam). Fold into the general rate-limiting work.
 
 ## Build-it-right (apply continuously, no trigger)
 - [x] Parameterized SQL everywhere (already good).
