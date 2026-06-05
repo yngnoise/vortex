@@ -252,7 +252,36 @@ func (s *Service) MarkAsRead(ctx context.Context, conversationID, userID, messag
 	if !isMember {
 		return ErrNotMember
 	}
-	return s.repo.MarkAsRead(ctx, conversationID, userID, messageID)
+
+	readAt, err := s.repo.MarkAsRead(ctx, conversationID, userID, messageID)
+	if err != nil {
+		return err
+	}
+
+	// Сообщаем отправителям, что их сообщения прочитаны (галочки прочтения).
+	if s.rt != nil && !readAt.IsZero() {
+		go s.rt.Publish("chat:"+conversationID, map[string]interface{}{
+			"type": "read",
+			"data": map[string]interface{}{
+				"user_id":         userID,
+				"conversation_id": conversationID,
+				"last_read_at":    readAt,
+			},
+		})
+	}
+	return nil
+}
+
+// GetReadState возвращает позиции прочтения участников чата.
+func (s *Service) GetReadState(ctx context.Context, conversationID, userID string) ([]MemberReadState, error) {
+	isMember, err := s.repo.IsMember(ctx, conversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !isMember {
+		return nil, ErrNotMember
+	}
+	return s.repo.GetReadState(ctx, conversationID)
 }
 
 // ──────────────────────────────────────────────────────

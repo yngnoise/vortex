@@ -39,6 +39,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/conversations/{id}/messages", h.handleGetMessages)
 	mux.HandleFunc("POST /api/conversations/{id}/read", h.handleMarkAsRead)
 	mux.HandleFunc("POST /api/conversations/{id}/typing", h.handleTyping)
+	mux.HandleFunc("GET /api/conversations/{id}/read-state", h.handleReadState)
 }
 
 // ────────────────────────────────────────────────────────────
@@ -491,4 +492,34 @@ func queryInt(r *http.Request, key string, defaultVal int) int {
 		return defaultVal
 	}
 	return v
+}
+
+// ────────────────────────────────────────────────────────────
+// GET /api/conversations/{id}/read-state
+// ────────────────────────────────────────────────────────────
+// Позиции прочтения участников — для отрисовки галочек при открытии чата.
+
+func (h *Handler) handleReadState(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	convID := r.PathValue("id")
+	states, err := h.service.GetReadState(r.Context(), convID, claims.UserID)
+	if err != nil {
+		if errors.Is(err, ErrNotMember) {
+			writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
+			return
+		}
+		log.Printf("read state error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+
+	if states == nil {
+		states = []MemberReadState{}
+	}
+	writeJSON(w, http.StatusOK, states)
 }

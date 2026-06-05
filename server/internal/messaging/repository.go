@@ -571,13 +571,53 @@ func (r *Repository) attachToMessages(ctx context.Context, msgs []Message) error
 // MarkAsRead обновляет last_read_msg_id для пользователя в чате.
 // Это как "синие галочки" — сервер знает до какого сообщения
 // пользователь долистал.
-func (r *Repository) MarkAsRead(ctx context.Context, conversationID, userID, messageID string) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE conversation_members
-		SET last_read_msg_id = $3
-		WHERE conversation_id = $1 AND user_id = $2
-	`, conversationID, userID, messageID)
-	return err
+// Возвращает время создания прочитанного сообщения (для галочек прочтения).
+// Джойн с messages гарантирует, что сообщение принадлежит этому чату.
+func (r *Repository) MarkAsRead(ctx context.Context, conversationID, userID, messageID string) (time.Time, error) {
+	var readAt time.Time
+	err := r.db.QueryRow(ctx, `
+		UPDATE conversation_members cm
+		SET last_read_msg_id = m.id
+		FROM messages m
+		WHERE cm.conversation_id = $1 AND cm.user_id = $2
+		  AND m.id = $3 AND m.conversation_id = $1
+		RETURNING m.created_at
+	`, conversationID, userID, messageID).Scan(&readAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, nil // невалидный message_id для этого чата — тихо игнорируем
+	}
+	return readAt, err
+}
+
+// MemberReadState — позиция прочтения участника (для галочек прочтения).
+type MemberReadState struct {
+	UserID     string     `json:"user_id"`
+	LastReadAt *time.Time `json:"last_read_at"`
+}
+
+// GetReadState возвращает для каждого участника время последнего
+// прочитанного сообщения (NULL, если ещё ничего не читал).
+func (r *Repository) GetReadState(ctx context.Context, conversationID string) ([]MemberReadState, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT cm.user_id, m.created_at
+		FROM conversation_members cm
+		LEFT JOIN messages m ON m.id = cm.last_read_msg_id
+		WHERE cm.conversation_id = $1
+	`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var states []MemberReadState
+	for rows.Next() {
+		var s MemberReadState
+		if err := rows.Scan(&s.UserID, &s.LastReadAt); err != nil {
+			return nil, err
+		}
+		states = append(states, s)
+	}
+	return states, rows.Err()
 }
 
 // ──────────────────────────────────────────────────────
