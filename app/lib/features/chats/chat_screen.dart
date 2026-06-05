@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/auth/auth_provider.dart';
 import '../../core/models/message.dart';
+import '../../core/presence.dart';
 import '../../core/realtime/realtime_service.dart';
 import 'chat_provider.dart';
 
@@ -17,12 +18,16 @@ class ChatScreen extends StatefulWidget {
   final String conversationId;
   final String title;
   final String? avatarUrl;
+  final String? otherUserId;
+  final DateTime? otherLastSeen;
 
   const ChatScreen({
     super.key,
     required this.conversationId,
     required this.title,
     this.avatarUrl,
+    this.otherUserId,
+    this.otherLastSeen,
   });
 
   @override
@@ -35,6 +40,8 @@ class _ChatScreenState extends State<ChatScreen> {
   final _controller = TextEditingController();
   final _scrollController = ScrollController();
   StreamSubscription? _realtimeSub;
+  DateTime? _otherLastSeen;
+  Timer? _presenceTimer;
 
   @override
   void initState() {
@@ -60,6 +67,29 @@ class _ChatScreenState extends State<ChatScreen> {
         }
       }
     });
+
+    // Присутствие собеседника (только для личных чатов)
+    _otherLastSeen = widget.otherLastSeen;
+    if (widget.otherUserId != null) {
+      _refreshPresence();
+      _presenceTimer = Timer.periodic(
+        const Duration(seconds: 30),
+        (_) => _refreshPresence(),
+      );
+    }
+  }
+
+  Future<void> _refreshPresence() async {
+    final id = widget.otherUserId;
+    if (id == null) return;
+    final api = context.read<ApiClient>();
+    try {
+      final profile = await api.getUserProfile(id);
+      final ls = profile['last_seen_at'];
+      if (ls != null && mounted) {
+        setState(() => _otherLastSeen = DateTime.tryParse(ls as String));
+      }
+    } catch (_) {}
   }
 
   void _onMessagesChanged() {
@@ -94,6 +124,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _chatProvider.removeListener(_onMessagesChanged);
     _realtimeSub?.cancel();
+    _presenceTimer?.cancel();
     _rt.unsubscribeChat(widget.conversationId);
     _chatProvider.markLastRead();
     _controller.dispose();
@@ -124,10 +155,28 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(
-                  widget.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      widget.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (widget.otherUserId != null &&
+                        presenceLabel(_otherLastSeen).isNotEmpty)
+                      Text(
+                        presenceLabel(_otherLastSeen),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.normal,
+                          color: isOnline(_otherLastSeen)
+                              ? Colors.green
+                              : Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
                 ),
               ),
             ],

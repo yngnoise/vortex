@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/models/conversation.dart';
+import '../../core/presence.dart';
 import 'chat_list_provider.dart';
 import 'chat_screen.dart';
 
@@ -91,6 +92,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
           conversationId: conv.id,
           title: conv.displayName,
           avatarUrl: conv.displayAvatar,
+          otherUserId: conv.isDirect ? conv.otherUserId : null,
+          otherLastSeen: conv.isDirect ? conv.otherLastSeen : null,
         ),
       ),
     );
@@ -113,18 +116,38 @@ class _ConversationTile extends StatelessWidget {
     final lastMsg = conv.lastMessage;
 
     return ListTile(
-      leading: CircleAvatar(
-        radius: 24,
-        backgroundImage:
-            conv.displayAvatar != null ? NetworkImage(conv.displayAvatar!) : null,
-        child: conv.displayAvatar == null
-            ? Text(
-                conv.displayName.isNotEmpty
-                    ? conv.displayName[0].toUpperCase()
-                    : '?',
-                style: const TextStyle(fontSize: 18),
-              )
-            : null,
+      leading: Stack(
+        children: [
+          CircleAvatar(
+            radius: 24,
+            backgroundImage: conv.displayAvatar != null
+                ? NetworkImage(conv.displayAvatar!)
+                : null,
+            child: conv.displayAvatar == null
+                ? Text(
+                    conv.displayName.isNotEmpty
+                        ? conv.displayName[0].toUpperCase()
+                        : '?',
+                    style: const TextStyle(fontSize: 18),
+                  )
+                : null,
+          ),
+          if (conv.isDirect && isOnline(conv.otherLastSeen))
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                width: 14,
+                height: 14,
+                decoration: BoxDecoration(
+                  color: Colors.green,
+                  shape: BoxShape.circle,
+                  border:
+                      Border.all(color: theme.scaffoldBackgroundColor, width: 2),
+                ),
+              ),
+            ),
+        ],
       ),
       title: Row(
         children: [

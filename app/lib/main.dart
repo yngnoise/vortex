@@ -2,6 +2,8 @@
 /// 📝 Точка входа — добавлен RealtimeService
 /// 🔗 Изменения: +RealtimeService, автоподключение после авторизации
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -75,6 +77,25 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   bool _realtimeConnected = false;
+  Timer? _presenceTimer;
+
+  void _startPresence() {
+    final api = context.read<ApiClient>();
+    api.ping();
+    _presenceTimer ??=
+        Timer.periodic(const Duration(seconds: 45), (_) => api.ping());
+  }
+
+  void _stopPresence() {
+    _presenceTimer?.cancel();
+    _presenceTimer = null;
+  }
+
+  @override
+  void dispose() {
+    _presenceTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -97,6 +118,7 @@ class _AuthGateState extends State<AuthGate> {
             rt.subscribeUser(userId);
           }
         });
+        _startPresence();
       }
       return const HomeScreen();
     }
@@ -105,6 +127,7 @@ class _AuthGateState extends State<AuthGate> {
     if (_realtimeConnected) {
       _realtimeConnected = false;
       context.read<RealtimeService>().disconnect();
+      _stopPresence();
     }
 
     return const LoginScreen();

@@ -255,6 +255,15 @@ class ApiClient {
     return _handleResponse(response);
   }
 
+  // ── Presence ────────────────────────────────────────
+
+  /// Heartbeat присутствия — обновляет last_seen_at. Ошибки глушим.
+  Future<void> ping() async {
+    try {
+      await _post('/presence/ping', {});
+    } catch (_) {}
+  }
+
   // ── Realtime ────────────────────────────────────────
 
   Future<String> getRealtimeToken() async {

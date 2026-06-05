@@ -55,6 +55,7 @@ class ConversationPreview {
   final String? otherUsername;
   final String? otherDisplayName;
   final String? otherAvatarUrl;
+  final DateTime? otherLastSeen;
 
   const ConversationPreview({
     required this.id,
@@ -70,6 +71,7 @@ class ConversationPreview {
     this.otherUsername,
     this.otherDisplayName,
     this.otherAvatarUrl,
+    this.otherLastSeen,
   });
 
   bool get isDirect => type == 'direct';
@@ -109,6 +111,9 @@ class ConversationPreview {
       otherUsername: json['other_username'] as String?,
       otherDisplayName: json['other_display_name'] as String?,
       otherAvatarUrl: json['other_avatar_url'] as String?,
+      otherLastSeen: json['other_last_seen'] != null
+          ? DateTime.parse(json['other_last_seen'] as String)
+          : null,
     );
   }
 }
