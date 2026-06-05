@@ -32,6 +32,28 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/auth/me", h.handleMe)
 	mux.HandleFunc("POST /api/auth/refresh", h.handleRefresh)
 	mux.HandleFunc("PATCH /api/auth/me", h.handleUpdateProfile)
+	mux.HandleFunc("POST /api/presence/ping", h.handlePing)
+}
+
+// ────────────────────────────────────────────────────────────
+// POST /api/presence/ping        (требует auth)
+// ────────────────────────────────────────────────────────────
+// Heartbeat присутствия. Клиент дёргает периодически, пока активен,
+// чтобы обновить last_seen_at. По нему собеседники видят «в сети».
+
+func (h *Handler) handlePing(w http.ResponseWriter, r *http.Request) {
+	claims := GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+
+	if err := h.service.Touch(r.Context(), claims.UserID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // ────────────────────────────────────────────────────────────

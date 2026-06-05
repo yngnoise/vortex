@@ -96,10 +96,11 @@ type ConversationPreview struct {
 	UnreadCount int      `json:"unread_count"`
 	MemberCount int      `json:"member_count"`
 	// Для direct-чатов: данные собеседника
-	OtherUserID   *string `json:"other_user_id,omitempty"`
-	OtherUsername *string `json:"other_username,omitempty"`
-	OtherName     *string `json:"other_display_name,omitempty"`
-	OtherAvatar   *string `json:"other_avatar_url,omitempty"`
+	OtherUserID   *string    `json:"other_user_id,omitempty"`
+	OtherUsername *string    `json:"other_username,omitempty"`
+	OtherName     *string    `json:"other_display_name,omitempty"`
+	OtherAvatar   *string    `json:"other_avatar_url,omitempty"`
+	OtherLastSeen *time.Time `json:"other_last_seen,omitempty"`
 }
 
 // ────────────────────────────────────────────────────────────
@@ -274,7 +275,7 @@ func (r *Repository) GetUserConversations(ctx context.Context, userID string, li
 			   AND sender_id != $1
 			),
 			-- Для direct-чатов: собеседник
-			u_other.id, u_other.username, u_other.display_name, u_other.avatar_url
+			u_other.id, u_other.username, u_other.display_name, u_other.avatar_url, u_other.last_seen_at
 		FROM conversation_members cm
 		JOIN conversations c ON c.id = cm.conversation_id
 		-- Последнее сообщение (LEFT JOIN — чат может быть пустым)
@@ -288,7 +289,7 @@ func (r *Repository) GetUserConversations(ctx context.Context, userID string, li
 		LEFT JOIN users u_sender ON u_sender.id = m.sender_id
 		-- Собеседник в direct-чате
 		LEFT JOIN LATERAL (
-			SELECT u.id, u.username, u.display_name, u.avatar_url
+			SELECT u.id, u.username, u.display_name, u.avatar_url, u.last_seen_at
 			FROM conversation_members cm2
 			JOIN users u ON u.id = cm2.user_id
 			WHERE cm2.conversation_id = c.id
@@ -320,6 +321,7 @@ func (r *Repository) GetUserConversations(ctx context.Context, userID string, li
 			&p.MemberCount,
 			&p.UnreadCount,
 			&p.OtherUserID, &p.OtherUsername, &p.OtherName, &p.OtherAvatar,
+			&p.OtherLastSeen,
 		)
 		if err != nil {
 			return nil, err

@@ -162,6 +162,12 @@ func (s *Service) GetProfile(ctx context.Context, userID string) (*User, error) 
 	return s.repo.GetUserByID(ctx, userID)
 }
 
+// Touch обновляет время последней активности пользователя.
+// Вызывается из presence-heartbeat — клиент дёргает периодически, пока активен.
+func (s *Service) Touch(ctx context.Context, userID string) error {
+	return s.repo.UpdateLastSeen(ctx, userID)
+}
+
 // ValidateAccessToken проверяет подпись и срок действия JWT.
 // Возвращает Claims с UserID и SessionID если токен валиден.
 func (s *Service) ValidateAccessToken(tokenStr string) (*Claims, error) {
@@ -229,6 +235,9 @@ func (s *Service) createSession(
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 
+	// Логин/регистрация = пользователь только что в сети.
+	_ = s.repo.UpdateLastSeen(ctx, userID)
+
 	// 4. Генерируем JWT access token
 	accessExpiresAt := time.Now().Add(s.cfg.AccessExpires)
 	claims := &Claims{
@@ -295,6 +304,9 @@ func (s *Service) RefreshTokens(ctx context.Context, refreshToken string) (*Toke
 	if err := s.repo.UpdateSessionToken(ctx, session.ID, newHash[:], newExpiresAt); err != nil {
 		return nil, fmt.Errorf("rotate token: %w", err)
 	}
+
+	// Обновление токена = активный клиент.
+	_ = s.repo.UpdateLastSeen(ctx, session.UserID)
 
 	// 5. Генерируем новый access token
 	accessExpiresAt := time.Now().Add(s.cfg.AccessExpires)
