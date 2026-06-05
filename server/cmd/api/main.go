@@ -31,13 +31,12 @@ func main() {
 	defer db.Close()
 	log.Println("Connected to PostgreSQL")
 
-	// ── 3. Centrifugo (real-time) ────────────
+	// ── 3. Centrifugo client ─────────────────
 	rtClient := realtime.NewClient(
 		cfg.Centrifugo.APIURL,
 		cfg.Centrifugo.APIKey,
 		cfg.Centrifugo.HMACSecret,
 	)
-	rtHandler := realtime.NewHandler(rtClient)
 
 	// ── Media (файловое хранилище) ───────────
 	storage, err := media.NewStorage(
@@ -66,7 +65,10 @@ func main() {
 	chService := channels.NewService(chRepo, rtClient)
 	chHandler := channels.NewHandler(chService)
 
-	// ── 7. Роутер ────────────────────────────
+	// ── 7. Realtime handler (после репозиториев) ──
+	rtHandler := realtime.NewHandler(rtClient, msgRepo, chRepo)
+
+	// ── 8. Роутер ────────────────────────────
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -81,16 +83,16 @@ func main() {
 	usersHandler.RegisterRoutes(mux)
 	mediaHandler.RegisterRoutes(mux)
 
-	// ── 8. Middleware ─────────────────────────
+	// ── 9. Middleware ─────────────────────────
 	authMW := middleware.Auth(authService)
 
 	handler := middleware.Logger(
-		middleware.CORS(
+		middleware.CORS(cfg.Server.AllowedOrigins)(
 			authRouter(mux, authMW),
 		),
 	)
 
-	// ── 9. HTTP-сервер ───────────────────────
+	// ── 10. HTTP-сервер ───────────────────────
 	server := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      handler,
@@ -106,7 +108,7 @@ func main() {
 		}
 	}()
 
-	// ── 10. Graceful shutdown ────────────────
+	// ── 11. Graceful shutdown ─────────────────
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

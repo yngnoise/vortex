@@ -9,22 +9,11 @@ import (
 	"github.com/yngnoise/vortex/internal/auth"
 )
 
-// ────────────────────────────────────────────────────────────
-// Auth middleware
-// ────────────────────────────────────────────────────────────
-// Перехватывает каждый запрос к защищённым эндпоинтам.
-// Проверяет заголовок Authorization: Bearer <token>.
-// Если токен валидный — кладёт Claims в context и пропускает.
-// Если нет — возвращает 401.
-//
-// Паттерн middleware в Go: функция принимает http.Handler
-// и возвращает новый http.Handler, который оборачивает оригинал.
-// Как матрёшка: Logger(CORS(Auth(handler))).
+// ── Auth ──────────────────────────────────────────────────────
 
 func Auth(authService *auth.Service) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 1. Достаём заголовок
 			header := r.Header.Get("Authorization")
 			if header == "" || !strings.HasPrefix(header, "Bearer ") {
 				writeJSON(w, http.StatusUnauthorized,
@@ -32,10 +21,8 @@ func Auth(authService *auth.Service) func(http.Handler) http.Handler {
 				return
 			}
 
-			// 2. Извлекаем токен (убираем "Bearer ")
 			tokenStr := strings.TrimPrefix(header, "Bearer ")
 
-			// 3. Проверяем подпись и срок действия
 			claims, err := authService.ValidateAccessToken(tokenStr)
 			if err != nil {
 				writeJSON(w, http.StatusUnauthorized,
@@ -43,51 +30,57 @@ func Auth(authService *auth.Service) func(http.Handler) http.Handler {
 				return
 			}
 
-			// 4. Кладём claims в context и пропускаем дальше
 			ctx := auth.SetClaimsToContext(r.Context(), claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// ────────────────────────────────────────────────────────────
-// CORS middleware
-// ────────────────────────────────────────────────────────────
-// Cross-Origin Resource Sharing — без этого браузер и Flutter Web
-// не смогут делать запросы к API (браузер блокирует cross-origin).
-// В продакшне замени "*" на конкретный домен.
+// ── CORS ──────────────────────────────────────────────────────
+// allowedOrigins: список разрешённых источников из CORS_ALLOWED_ORIGINS.
+// Если список содержит "*" — разрешаются все источники (только для dev).
+// В production передавайте конкретные домены: "https://app.example.com".
 
-func CORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Max-Age", "86400")
+func CORS(allowedOrigins []string) func(http.Handler) http.Handler {
+	allowAll := len(allowedOrigins) == 1 && allowedOrigins[0] == "*"
 
-		// Preflight-запрос — браузер сначала шлёт OPTIONS,
-		// чтобы узнать разрешён ли настоящий запрос.
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[strings.TrimSpace(o)] = true
+	}
 
-		next.ServeHTTP(w, r)
-	})
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+
+			if allowAll {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else if origin != "" && allowed[origin] {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Add("Vary", "Origin")
+			}
+
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
-// ────────────────────────────────────────────────────────────
-// Logger middleware
-// ────────────────────────────────────────────────────────────
-// Логирует каждый запрос: метод, путь, статус-код, время выполнения.
-// Пример вывода: POST /api/auth/login 200 12ms
+// ── Logger ────────────────────────────────────────────────────
 
 func Logger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// Оборачиваем ResponseWriter чтобы перехватить статус-код
 		wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-
 		next.ServeHTTP(wrapped, r)
 
 		log.Printf("%s %s %d %s",
@@ -99,9 +92,6 @@ func Logger(next http.Handler) http.Handler {
 	})
 }
 
-// responseWriter — обёртка, которая запоминает статус-код.
-// Стандартный http.ResponseWriter не даёт узнать какой код
-// был отправлен — приходится перехватывать.
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode int

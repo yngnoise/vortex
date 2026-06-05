@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"time"
 )
 
@@ -15,7 +16,8 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port string
+	Port           string
+	AllowedOrigins []string
 }
 
 type DatabaseConfig struct {
@@ -33,9 +35,9 @@ type JWTConfig struct {
 }
 
 type CentrifugoConfig struct {
-	APIURL     string // URL для Server API (Go → Centrifugo)
-	APIKey     string // ключ авторизации для Server API
-	HMACSecret string // секрет для подписи клиентских JWT
+	APIURL     string
+	APIKey     string
+	HMACSecret string
 }
 
 type MinIOConfig struct {
@@ -49,7 +51,8 @@ type MinIOConfig struct {
 func Load() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Port: getEnv("PORT", "8080"),
+			Port:           getEnv("PORT", "8080"),
+			AllowedOrigins: strings.Split(getEnv("CORS_ALLOWED_ORIGINS", "*"), ","),
 		},
 		Database: DatabaseConfig{
 			URL: getEnv("DATABASE_URL",
