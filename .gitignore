@@ -1,0 +1,28 @@
+# ─── Archives / build artifacts ──────────────
+*.tar
+*.zip
+*.7z
+
+# ─── Secrets / local env ─────────────────────
+.env
+.env.*
+!.env.example
+*.local
+
+# ─── Go server ───────────────────────────────
+/server/bin/
+/server/api
+/server/*.exe
+/server/__debug_bin*
+*.test
+*.out
+
+# ─── Editor / tooling state ──────────────────
+.claude/settings.local.json
+.idea/
+.vscode/
+*.log
+
+# ─── OS junk ─────────────────────────────────
+Thumbs.db
+.DS_Store
