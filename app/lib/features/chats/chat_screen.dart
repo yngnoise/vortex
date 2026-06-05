@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/auth/auth_provider.dart';
@@ -311,10 +312,18 @@ class _MessageBubble extends StatelessWidget {
                     ),
                   ),
                 ),
-              Text(
-                message.content,
-                style: const TextStyle(fontSize: 15),
-              ),
+              if (message.hasAttachments)
+                ...message.attachments.map(
+                  (a) => Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: _AttachmentView(attachment: a),
+                  ),
+                ),
+              if (message.content.isNotEmpty)
+                Text(
+                  message.content,
+                  style: const TextStyle(fontSize: 15),
+                ),
               const SizedBox(height: 2),
               Row(
                 mainAxisSize: MainAxisSize.min,
@@ -351,6 +360,7 @@ class _MessageInputState extends State<_MessageInput> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
   bool _hasText = false;
+  bool _uploading = false;
 
   @override
   void initState() {
@@ -376,6 +386,42 @@ class _MessageInputState extends State<_MessageInput> {
     final provider = context.read<ChatProvider>();
     await provider.send(text);
     _focusNode.requestFocus();
+  }
+
+  /// Выбрать файл, загрузить и отправить как вложение
+  /// (текст в поле ввода становится подписью).
+  Future<void> _pickAndSend() async {
+    final result = await FilePicker.platform.pickFiles(withData: true);
+    if (result == null || result.files.isEmpty) return;
+    final picked = result.files.first;
+    final bytes = picked.bytes;
+    if (bytes == null) return;
+
+    if (!mounted) return;
+    setState(() => _uploading = true);
+
+    final api = context.read<ApiClient>();
+    final provider = context.read<ChatProvider>();
+    final caption = _controller.text.trim();
+
+    try {
+      final info = await api.uploadMedia(bytes, picked.name);
+      final ok = await provider.send(
+        caption,
+        attachments: [
+          {'key': info['key'], 'file_name': picked.name},
+        ],
+      );
+      if (ok) _controller.clear();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Не удалось отправить файл')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
   }
 
   /// Enter → отправить, Shift+Enter → перенос строки.
@@ -426,6 +472,17 @@ class _MessageInputState extends State<_MessageInput> {
       ),
       child: Row(
         children: [
+          IconButton(
+            onPressed: (sending || _uploading) ? null : _pickAndSend,
+            tooltip: 'Прикрепить файл',
+            icon: _uploading
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.attach_file),
+          ),
           Expanded(
             child: TextField(
               controller: _controller,
@@ -460,5 +517,95 @@ class _MessageInputState extends State<_MessageInput> {
         ],
       ),
     );
+  }
+}
+
+// ── Вложение в пузыре сообщения ──────────────────────
+
+class _AttachmentView extends StatelessWidget {
+  final Attachment attachment;
+  const _AttachmentView({required this.attachment});
+
+  @override
+  Widget build(BuildContext context) {
+    if (attachment.isImage) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 240, maxWidth: 260),
+          child: Image.network(
+            attachment.fileUrl,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => _fileChip(context),
+            loadingBuilder: (ctx, child, progress) {
+              if (progress == null) return child;
+              return const SizedBox(
+                width: 120,
+                height: 120,
+                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+              );
+            },
+          ),
+        ),
+      );
+    }
+    return _fileChip(context);
+  }
+
+  Widget _fileChip(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(_iconForType(attachment.fileType),
+              size: 28, color: theme.colorScheme.primary),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  attachment.fileName ?? 'Файл',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                ),
+                Text(
+                  _formatSize(attachment.fileSize),
+                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  IconData _iconForType(String type) {
+    switch (type) {
+      case 'video':
+        return Icons.videocam;
+      case 'audio':
+        return Icons.audiotrack;
+      case 'document':
+        return Icons.description;
+      default:
+        return Icons.insert_drive_file;
+    }
+  }
+
+  static String _formatSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 }

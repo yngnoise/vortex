@@ -160,11 +160,17 @@ class ApiClient {
     return await _getList('/conversations?limit=$limit&offset=$offset');
   }
 
-  Future<Map<String, dynamic>> sendMessage(String conversationId, String content, {String? replyToId}) async {
+  Future<Map<String, dynamic>> sendMessage(
+    String conversationId,
+    String content, {
+    String? replyToId,
+    List<Map<String, dynamic>>? attachments,
+  }) async {
     return await _post('/conversations/$conversationId/messages', {
       'content': content,
       'content_type': 'text',
       'reply_to_id': ?replyToId,
+      'attachments': ?attachments,
     });
   }
 
@@ -230,6 +236,23 @@ class ApiClient {
     var url = '/rooms/$roomId/messages?limit=$limit';
     if (before != null) url += '&before=$before';
     return await _getList(url);
+  }
+
+  // ── Media ───────────────────────────────────────────
+
+  /// Загружает файл (multipart) и возвращает его метаданные:
+  /// {key, url, size, content_type}. `key` затем передаётся в sendMessage.
+  Future<Map<String, dynamic>> uploadMedia(List<int> bytes, String filename) async {
+    await _ensureValidToken();
+    final request = http.MultipartRequest('POST', Uri.parse('$baseUrl/media/upload'));
+    if (_accessToken != null) {
+      request.headers['Authorization'] = 'Bearer $_accessToken';
+    }
+    request.files.add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
+
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    return _handleResponse(response);
   }
 
   // ── Realtime ────────────────────────────────────────

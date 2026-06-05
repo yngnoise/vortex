@@ -75,9 +75,14 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Отправить сообщение.
-  Future<bool> send(String content, {String? replyToId}) async {
-    if (content.trim().isEmpty) return false;
+  /// Отправить сообщение. Можно с вложениями (attachments) и/или текстом.
+  Future<bool> send(
+    String content, {
+    String? replyToId,
+    List<Map<String, dynamic>>? attachments,
+  }) async {
+    final hasAttachments = attachments != null && attachments.isNotEmpty;
+    if (content.trim().isEmpty && !hasAttachments) return false;
 
     _isSending = true;
     notifyListeners();
@@ -87,6 +92,7 @@ class ChatProvider extends ChangeNotifier {
         conversationId,
         content.trim(),
         replyToId: replyToId,
+        attachments: attachments,
       );
       addRealtimeMessage(Message.fromJson(data));
       _isSending = false;
