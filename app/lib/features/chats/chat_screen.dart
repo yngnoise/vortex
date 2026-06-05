@@ -53,8 +53,13 @@ class _ChatScreenState extends State<ChatScreen> {
     _chatProvider = ChatProvider(
       api: context.read<ApiClient>(),
       conversationId: widget.conversationId,
+      currentUserId: _currentUserId,
     );
-    _chatProvider.loadMessages().then((_) => _scrollToBottom());
+    _chatProvider.loadMessages().then((_) {
+      _scrollToBottom();
+      _chatProvider.markLastRead();
+      _chatProvider.loadReadState();
+    });
     _chatProvider.addListener(_onMessagesChanged);
     _scrollController.addListener(_onScroll);
 
@@ -74,6 +79,16 @@ class _ChatScreenState extends State<ChatScreen> {
         final payload = event.data['data'];
         final uid = payload is Map ? payload['user_id'] as String? : null;
         if (uid != null && uid != _currentUserId) _showTyping();
+      } else if (event.type == 'read') {
+        final payload = event.data['data'];
+        if (payload is Map) {
+          final uid = payload['user_id'] as String?;
+          final ls = payload['last_read_at'];
+          if (uid != null && ls != null) {
+            final dt = DateTime.tryParse(ls as String);
+            if (dt != null) _chatProvider.applyRead(uid, dt);
+          }
+        }
       }
     });
 
@@ -270,6 +285,7 @@ class _MessageList extends StatelessWidget {
           message: msg,
           isMine: isMine,
           showSender: showSender,
+          seenAt: provider.otherLastReadAt,
           onLongPress: isMine
               ? () => _showMessageActions(context, provider, msg)
               : null,
@@ -346,17 +362,20 @@ class _MessageBubble extends StatelessWidget {
   final bool isMine;
   final bool showSender;
   final VoidCallback? onLongPress;
+  final DateTime? seenAt;
 
   const _MessageBubble({
     required this.message,
     required this.isMine,
     required this.showSender,
     this.onLongPress,
+    this.seenAt,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final seen = isMine && seenAt != null && !message.createdAt.isAfter(seenAt!);
 
     return Align(
       alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
@@ -417,6 +436,14 @@ class _MessageBubble extends StatelessWidget {
                       ' • изм.',
                       style: TextStyle(fontSize: 11, color: Colors.grey[500]),
                     ),
+                  if (isMine) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      seen ? Icons.done_all : Icons.done,
+                      size: 14,
+                      color: seen ? Colors.blue : Colors.grey[500],
+                    ),
+                  ],
                 ],
               ),
             ],

@@ -9,8 +9,13 @@ import '../../core/models/message.dart';
 class ChatProvider extends ChangeNotifier {
   final ApiClient api;
   final String conversationId;
+  final String? currentUserId;
 
-  ChatProvider({required this.api, required this.conversationId});
+  ChatProvider({
+    required this.api,
+    required this.conversationId,
+    this.currentUserId,
+  });
 
   List<Message> _messages = [];
   bool _isLoading = false;
@@ -18,12 +23,14 @@ class ChatProvider extends ChangeNotifier {
   bool _hasMore = true;
   String? _error;
   DateTime? _lastTyping;
+  DateTime? _otherLastReadAt;
 
   List<Message> get messages => _messages;
   bool get isLoading => _isLoading;
   bool get isSending => _isSending;
   bool get hasMore => _hasMore;
   String? get error => _error;
+  DateTime? get otherLastReadAt => _otherLastReadAt;
 
   /// Загрузить последние сообщения.
   Future<void> loadMessages() async {
@@ -159,10 +166,43 @@ class ChatProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Загрузить позиции прочтения собеседника (галочки) при открытии чата.
+  Future<void> loadReadState() async {
+    try {
+      final data = await api.getReadState(conversationId);
+      DateTime? maxOther;
+      for (final s in data) {
+        final m = s as Map<String, dynamic>;
+        if (m['user_id'] == currentUserId) continue;
+        final ls = m['last_read_at'];
+        if (ls == null) continue;
+        final dt = DateTime.tryParse(ls as String);
+        if (dt != null && (maxOther == null || dt.isAfter(maxOther))) {
+          maxOther = dt;
+        }
+      }
+      if (maxOther != null) {
+        _otherLastReadAt = maxOther;
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  /// Применить событие прочтения от собеседника (realtime).
+  void applyRead(String userId, DateTime lastReadAt) {
+    if (userId == currentUserId) return;
+    if (_otherLastReadAt == null || lastReadAt.isAfter(_otherLastReadAt!)) {
+      _otherLastReadAt = lastReadAt;
+      notifyListeners();
+    }
+  }
+
   /// Добавить сообщение из realtime (когда подключим Centrifugo).
   void addRealtimeMessage(Message msg) {
     if (_messages.any((m) => m.id == msg.id)) return;
     _messages.add(msg);
     notifyListeners();
+    // Чужое сообщение, пока чат открыт — сразу помечаем прочитанным.
+    if (msg.senderId != currentUserId) markLastRead();
   }
 }

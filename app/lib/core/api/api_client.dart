@@ -203,6 +203,11 @@ class ApiClient {
     } catch (_) {}
   }
 
+  /// Позиции прочтения участников чата (для галочек).
+  Future<List<dynamic>> getReadState(String conversationId) async {
+    return await _getList('/conversations/$conversationId/read-state');
+  }
+
   // ── Channels ────────────────────────────────────────
 
   Future<Map<String, dynamic>> createChannel(String name, String description, bool isPublic) async {
