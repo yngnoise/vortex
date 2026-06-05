@@ -42,10 +42,14 @@ class _ChatScreenState extends State<ChatScreen> {
   StreamSubscription? _realtimeSub;
   DateTime? _otherLastSeen;
   Timer? _presenceTimer;
+  String? _currentUserId;
+  bool _otherTyping = false;
+  Timer? _typingTimer;
 
   @override
   void initState() {
     super.initState();
+    _currentUserId = context.read<AuthProvider>().user?['id'] as String?;
     _chatProvider = ChatProvider(
       api: context.read<ApiClient>(),
       conversationId: widget.conversationId,
@@ -64,7 +68,12 @@ class _ChatScreenState extends State<ChatScreen> {
         if (msgData is Map<String, dynamic>) {
           final msg = Message.fromJson(msgData);
           _chatProvider.addRealtimeMessage(msg);
+          if (msg.senderId != _currentUserId) _clearTyping();
         }
+      } else if (event.type == 'typing') {
+        final payload = event.data['data'];
+        final uid = payload is Map ? payload['user_id'] as String? : null;
+        if (uid != null && uid != _currentUserId) _showTyping();
       }
     });
 
@@ -90,6 +99,18 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => _otherLastSeen = DateTime.tryParse(ls as String));
       }
     } catch (_) {}
+  }
+
+  void _showTyping() {
+    if (!mounted) return;
+    if (!_otherTyping) setState(() => _otherTyping = true);
+    _typingTimer?.cancel();
+    _typingTimer = Timer(const Duration(seconds: 4), _clearTyping);
+  }
+
+  void _clearTyping() {
+    _typingTimer?.cancel();
+    if (mounted && _otherTyping) setState(() => _otherTyping = false);
   }
 
   void _onMessagesChanged() {
@@ -125,6 +146,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _chatProvider.removeListener(_onMessagesChanged);
     _realtimeSub?.cancel();
     _presenceTimer?.cancel();
+    _typingTimer?.cancel();
     _rt.unsubscribeChat(widget.conversationId);
     _chatProvider.markLastRead();
     _controller.dispose();
@@ -164,7 +186,16 @@ class _ChatScreenState extends State<ChatScreen> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    if (widget.otherUserId != null &&
+                    if (_otherTyping)
+                      Text(
+                        'печатает…',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.normal,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      )
+                    else if (widget.otherUserId != null &&
                         presenceLabel(_otherLastSeen).isNotEmpty)
                       Text(
                         presenceLabel(_otherLastSeen),
@@ -417,6 +448,7 @@ class _MessageInputState extends State<_MessageInput> {
     _controller.addListener(() {
       final has = _controller.text.trim().isNotEmpty;
       if (has != _hasText) setState(() => _hasText = has);
+      if (has) context.read<ChatProvider>().notifyTyping();
     });
   }
 

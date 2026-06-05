@@ -196,6 +196,13 @@ class ApiClient {
     });
   }
 
+  /// Эфемерное уведомление «печатает». Ошибки глушим.
+  Future<void> sendTyping(String conversationId) async {
+    try {
+      await _post('/conversations/$conversationId/typing', {});
+    } catch (_) {}
+  }
+
   // ── Channels ────────────────────────────────────────
 
   Future<Map<String, dynamic>> createChannel(String name, String description, bool isPublic) async {

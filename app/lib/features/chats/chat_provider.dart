@@ -17,6 +17,7 @@ class ChatProvider extends ChangeNotifier {
   bool _isSending = false;
   bool _hasMore = true;
   String? _error;
+  DateTime? _lastTyping;
 
   List<Message> get messages => _messages;
   bool get isLoading => _isLoading;
@@ -109,6 +110,16 @@ class ChatProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+  }
+
+  /// Сообщить серверу, что пользователь печатает (не чаще раза в 3 секунды).
+  void notifyTyping() {
+    final now = DateTime.now();
+    if (_lastTyping != null && now.difference(_lastTyping!).inSeconds < 3) {
+      return;
+    }
+    _lastTyping = now;
+    api.sendTyping(conversationId);
   }
 
   /// Редактировать сообщение.
