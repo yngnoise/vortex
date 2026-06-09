@@ -10,19 +10,25 @@ import (
 	"github.com/yngnoise/vortex/internal/auth"
 )
 
-// MemberChecker проверяет членство пользователя в ресурсе.
-// Реализуется messaging.Repository и channels.Repository.
+// MemberChecker проверяет членство пользователя по id ресурса.
+// Реализуется messaging.Repository (id = conversationID).
 type MemberChecker interface {
 	IsMember(ctx context.Context, id, userID string) (bool, error)
+}
+
+// RoomMemberChecker проверяет доступ к комнате канала по roomID
+// (членство в родительском канале). Реализуется channels.Repository.
+type RoomMemberChecker interface {
+	IsRoomMember(ctx context.Context, roomID, userID string) (bool, error)
 }
 
 type Handler struct {
 	client  *Client
 	msgRepo MemberChecker
-	chRepo  MemberChecker
+	chRepo  RoomMemberChecker
 }
 
-func NewHandler(client *Client, msgRepo, chRepo MemberChecker) *Handler {
+func NewHandler(client *Client, msgRepo MemberChecker, chRepo RoomMemberChecker) *Handler {
 	return &Handler{client: client, msgRepo: msgRepo, chRepo: chRepo}
 }
 
@@ -95,7 +101,8 @@ func (h *Handler) canSubscribe(ctx context.Context, userID, channel string) bool
 		ok, err := h.msgRepo.IsMember(ctx, id, userID)
 		return err == nil && ok
 	case "channel":
-		ok, err := h.chRepo.IsMember(ctx, id, userID)
+		// id здесь — roomID; проверяем членство в родительском канале комнаты.
+		ok, err := h.chRepo.IsRoomMember(ctx, id, userID)
 		return err == nil && ok
 	default:
 		return false

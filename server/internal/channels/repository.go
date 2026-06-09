@@ -341,6 +341,22 @@ func (r *Repository) IsMember(ctx context.Context, channelID, userID string) (bo
 	return exists, err
 }
 
+// IsRoomMember проверяет доступ к комнате по roomID — то есть членство
+// в родительском канале этой комнаты. Используется realtime-подпиской
+// на канал "channel:<roomID>" (имена комнат, а не каналов).
+func (r *Repository) IsRoomMember(ctx context.Context, roomID, userID string) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM channel_rooms cr
+			JOIN channel_members cm ON cm.channel_id = cr.channel_id
+			WHERE cr.id = $1 AND cm.user_id = $2
+		)
+	`, roomID, userID).Scan(&exists)
+	return exists, err
+}
+
 // GetMembers возвращает список участников канала.
 func (r *Repository) GetMembers(ctx context.Context, channelID string, limit, offset int) ([]ChannelMember, error) {
 	rows, err := r.db.Query(ctx, `
