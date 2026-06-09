@@ -40,6 +40,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/conversations/{id}/read", h.handleMarkAsRead)
 	mux.HandleFunc("POST /api/conversations/{id}/typing", h.handleTyping)
 	mux.HandleFunc("GET /api/conversations/{id}/read-state", h.handleReadState)
+
+	// Group management
+	mux.HandleFunc("PATCH /api/conversations/{id}", h.handleRenameGroup)
+	mux.HandleFunc("POST /api/conversations/{id}/members", h.handleAddMembers)
+	mux.HandleFunc("DELETE /api/conversations/{id}/members/{userId}", h.handleRemoveMember)
+	mux.HandleFunc("POST /api/conversations/{id}/leave", h.handleLeaveGroup)
 }
 
 // ────────────────────────────────────────────────────────────
@@ -68,6 +74,14 @@ type markAsReadRequest struct {
 
 type editMessageRequest struct {
 	Content string `json:"content"`
+}
+
+type renameGroupRequest struct {
+	Title string `json:"title"`
+}
+
+type addMembersRequest struct {
+	UserIDs []string `json:"user_ids"`
 }
 
 // ────────────────────────────────────────────────────────────
@@ -522,4 +536,107 @@ func (h *Handler) handleReadState(w http.ResponseWriter, r *http.Request) {
 		states = []MemberReadState{}
 	}
 	writeJSON(w, http.StatusOK, states)
+}
+
+// ────────────────────────────────────────────────────────────
+// Group management
+// ────────────────────────────────────────────────────────────
+
+// PATCH /api/conversations/{id} — переименовать группу (owner/admin).
+func (h *Handler) handleRenameGroup(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+	convID := r.PathValue("id")
+	var req renameGroupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", "INVALID_BODY")
+		return
+	}
+	conv, err := h.service.RenameGroup(r.Context(), convID, claims.UserID, req.Title)
+	if err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, conv)
+}
+
+// POST /api/conversations/{id}/members — добавить участников (owner/admin).
+func (h *Handler) handleAddMembers(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+	convID := r.PathValue("id")
+	var req addMembersRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body", "INVALID_BODY")
+		return
+	}
+	if err := h.service.AddMembers(r.Context(), convID, claims.UserID, req.UserIDs); err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// DELETE /api/conversations/{id}/members/{userId} — исключить участника.
+func (h *Handler) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+	convID := r.PathValue("id")
+	targetID := r.PathValue("userId")
+	if err := h.service.RemoveMember(r.Context(), convID, claims.UserID, targetID); err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+// POST /api/conversations/{id}/leave — покинуть группу.
+func (h *Handler) handleLeaveGroup(w http.ResponseWriter, r *http.Request) {
+	claims := auth.GetClaimsFromContext(r.Context())
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "UNAUTHORIZED")
+		return
+	}
+	convID := r.PathValue("id")
+	if err := h.service.LeaveGroup(r.Context(), convID, claims.UserID); err != nil {
+		writeGroupError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "left"})
+}
+
+// writeGroupError маппит ошибки управления группой в HTTP-коды.
+func writeGroupError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNoTitle):
+		writeError(w, http.StatusBadRequest, "title is required", "MISSING_TITLE")
+	case errors.Is(err, ErrTitleTooLong):
+		writeError(w, http.StatusBadRequest, "title too long (max 128)", "TITLE_TOO_LONG")
+	case errors.Is(err, ErrTooFewMembers):
+		writeError(w, http.StatusBadRequest, "no members to add", "TOO_FEW_MEMBERS")
+	case errors.Is(err, ErrNotGroup):
+		writeError(w, http.StatusBadRequest, "not a group conversation", "NOT_GROUP")
+	case errors.Is(err, ErrForbidden):
+		writeError(w, http.StatusForbidden, "insufficient permissions", "FORBIDDEN")
+	case errors.Is(err, ErrCannotRemoveOwner):
+		writeError(w, http.StatusBadRequest, "cannot remove the group owner", "CANNOT_REMOVE_OWNER")
+	case errors.Is(err, ErrCannotKickSelf):
+		writeError(w, http.StatusBadRequest, "use leave to remove yourself", "USE_LEAVE")
+	case errors.Is(err, ErrNotMember):
+		writeError(w, http.StatusForbidden, "not a member", "NOT_MEMBER")
+	case errors.Is(err, ErrConversationNotFound):
+		writeError(w, http.StatusNotFound, "conversation not found", "NOT_FOUND")
+	default:
+		log.Printf("group management error: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error", "INTERNAL")
+	}
 }

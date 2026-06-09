@@ -360,6 +360,116 @@ func (r *Repository) IsMember(ctx context.Context, conversationID, userID string
 	return exists, err
 }
 
+// GetMemberRole возвращает роль пользователя в чате (owner/admin/member).
+func (r *Repository) GetMemberRole(ctx context.Context, conversationID, userID string) (string, error) {
+	var role string
+	err := r.db.QueryRow(ctx, `
+		SELECT role FROM conversation_members
+		WHERE conversation_id = $1 AND user_id = $2
+	`, conversationID, userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotMember
+	}
+	return role, err
+}
+
+// RenameGroup меняет название группового чата.
+func (r *Repository) RenameGroup(ctx context.Context, conversationID, title string) (*Conversation, error) {
+	conv := &Conversation{}
+	err := r.db.QueryRow(ctx, `
+		UPDATE conversations
+		SET title = $2, updated_at = NOW()
+		WHERE id = $1 AND type = 'group'
+		RETURNING id, type, title, avatar_url, created_by, created_at
+	`, conversationID, title).Scan(
+		&conv.ID, &conv.Type, &conv.Title,
+		&conv.AvatarURL, &conv.CreatedBy, &conv.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrConversationNotFound
+	}
+	return conv, err
+}
+
+// AddMembers добавляет участников (роль member). Дубликаты игнорируются.
+func (r *Repository) AddMembers(ctx context.Context, conversationID string, userIDs []string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	for _, uid := range userIDs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO conversation_members (conversation_id, user_id, role)
+			VALUES ($1, $2, 'member')
+			ON CONFLICT (conversation_id, user_id) DO NOTHING
+		`, conversationID, uid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// RemoveMember удаляет участника из чата.
+func (r *Repository) RemoveMember(ctx context.Context, conversationID, userID string) error {
+	tag, err := r.db.Exec(ctx, `
+		DELETE FROM conversation_members
+		WHERE conversation_id = $1 AND user_id = $2
+	`, conversationID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotMember
+	}
+	return nil
+}
+
+// LeaveConversation убирает пользователя из чата. Если он был owner,
+// владельцем становится самый давний из оставшихся участников (если есть).
+func (r *Repository) LeaveConversation(ctx context.Context, conversationID, userID string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var role string
+	err = tx.QueryRow(ctx, `
+		SELECT role FROM conversation_members
+		WHERE conversation_id = $1 AND user_id = $2
+	`, conversationID, userID).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotMember
+	}
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM conversation_members
+		WHERE conversation_id = $1 AND user_id = $2
+	`, conversationID, userID); err != nil {
+		return err
+	}
+
+	if role == "owner" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE conversation_members SET role = 'owner'
+			WHERE conversation_id = $1 AND user_id = (
+				SELECT user_id FROM conversation_members
+				WHERE conversation_id = $1
+				ORDER BY joined_at ASC
+				LIMIT 1
+			)
+		`, conversationID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // GetMembers возвращает список участников чата.
 func (r *Repository) GetMembers(ctx context.Context, conversationID string) ([]ConversationMember, error) {
 	rows, err := r.db.Query(ctx, `

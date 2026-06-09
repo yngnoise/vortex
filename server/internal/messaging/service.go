@@ -19,6 +19,11 @@ var (
 	ErrContentTooLong     = errors.New("message content too long")
 	ErrTooManyAttachments = errors.New("too many attachments")
 	ErrInvalidAttachment  = errors.New("invalid attachment")
+	ErrNotGroup           = errors.New("not a group conversation")
+	ErrForbidden          = errors.New("insufficient permissions")
+	ErrCannotRemoveOwner  = errors.New("cannot remove the group owner")
+	ErrCannotKickSelf     = errors.New("use leave to remove yourself")
+	ErrTitleTooLong       = errors.New("group title too long")
 )
 
 const (
@@ -364,6 +369,142 @@ func (s *Service) NotifyTyping(ctx context.Context, conversationID, userID strin
 		go s.rt.Publish("chat:"+conversationID, map[string]interface{}{
 			"type": "typing",
 			"data": map[string]string{"user_id": userID},
+		})
+	}
+	return nil
+}
+
+// ────────────────────────────────────────────────────────────
+// Group management
+// ────────────────────────────────────────────────────────────
+
+const maxTitleLen = 128
+
+func isManager(role string) bool { return role == "owner" || role == "admin" }
+
+// requireGroupManager проверяет, что чат групповой, а вызывающий — owner/admin.
+func (s *Service) requireGroupManager(ctx context.Context, conversationID, userID string) (*Conversation, error) {
+	conv, err := s.repo.GetConversation(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if conv.Type != "group" {
+		return nil, ErrNotGroup
+	}
+	role, err := s.repo.GetMemberRole(ctx, conversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !isManager(role) {
+		return nil, ErrForbidden
+	}
+	return conv, nil
+}
+
+// RenameGroup меняет название группы (owner/admin).
+func (s *Service) RenameGroup(ctx context.Context, conversationID, userID, title string) (*Conversation, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil, ErrNoTitle
+	}
+	if utf8.RuneCountInString(title) > maxTitleLen {
+		return nil, ErrTitleTooLong
+	}
+	if _, err := s.requireGroupManager(ctx, conversationID, userID); err != nil {
+		return nil, err
+	}
+
+	conv, err := s.repo.RenameGroup(ctx, conversationID, title)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.rt != nil {
+		go s.rt.Publish("chat:"+conversationID, map[string]interface{}{
+			"type": "group_renamed",
+			"data": map[string]interface{}{"conversation_id": conversationID, "title": title},
+		})
+	}
+	return conv, nil
+}
+
+// AddMembers добавляет участников в группу (owner/admin).
+func (s *Service) AddMembers(ctx context.Context, conversationID, userID string, memberIDs []string) error {
+	if len(memberIDs) == 0 {
+		return ErrTooFewMembers
+	}
+	if _, err := s.requireGroupManager(ctx, conversationID, userID); err != nil {
+		return err
+	}
+	if err := s.repo.AddMembers(ctx, conversationID, memberIDs); err != nil {
+		return err
+	}
+
+	if s.rt != nil {
+		for _, uid := range memberIDs {
+			go s.rt.Publish("chat:"+conversationID, map[string]interface{}{
+				"type": "member_added",
+				"data": map[string]interface{}{"conversation_id": conversationID, "user_id": uid},
+			})
+			go s.rt.Publish("user:"+uid, map[string]interface{}{
+				"type": "added_to_conversation",
+				"data": map[string]interface{}{"conversation_id": conversationID},
+			})
+		}
+	}
+	return nil
+}
+
+// RemoveMember исключает участника (owner/admin; нельзя владельца и себя).
+func (s *Service) RemoveMember(ctx context.Context, conversationID, callerID, targetID string) error {
+	if callerID == targetID {
+		return ErrCannotKickSelf
+	}
+	if _, err := s.requireGroupManager(ctx, conversationID, callerID); err != nil {
+		return err
+	}
+	targetRole, err := s.repo.GetMemberRole(ctx, conversationID, targetID)
+	if err != nil {
+		return err
+	}
+	if targetRole == "owner" {
+		return ErrCannotRemoveOwner
+	}
+	if err := s.repo.RemoveMember(ctx, conversationID, targetID); err != nil {
+		return err
+	}
+
+	if s.rt != nil {
+		go s.rt.Publish("chat:"+conversationID, map[string]interface{}{
+			"type": "member_removed",
+			"data": map[string]interface{}{"conversation_id": conversationID, "user_id": targetID},
+		})
+		go s.rt.Publish("user:"+targetID, map[string]interface{}{
+			"type": "removed_from_conversation",
+			"data": map[string]interface{}{"conversation_id": conversationID},
+		})
+	}
+	return nil
+}
+
+// LeaveGroup — выход участника. Если уходит owner, владельцем
+// становится самый давний из оставшихся участников.
+func (s *Service) LeaveGroup(ctx context.Context, conversationID, userID string) error {
+	conv, err := s.repo.GetConversation(ctx, conversationID)
+	if err != nil {
+		return err
+	}
+	if conv.Type != "group" {
+		return ErrNotGroup
+	}
+	if err := s.repo.LeaveConversation(ctx, conversationID, userID); err != nil {
+		return err
+	}
+
+	if s.rt != nil {
+		go s.rt.Publish("chat:"+conversationID, map[string]interface{}{
+			"type": "member_removed",
+			"data": map[string]interface{}{"conversation_id": conversationID, "user_id": userID},
 		})
 	}
 	return nil
