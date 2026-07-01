@@ -13,6 +13,7 @@ import '../../core/models/message.dart';
 import '../../core/presence.dart';
 import '../../core/realtime/realtime_service.dart';
 import 'chat_provider.dart';
+import 'group_info_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final String conversationId;
@@ -20,6 +21,7 @@ class ChatScreen extends StatefulWidget {
   final String? avatarUrl;
   final String? otherUserId;
   final DateTime? otherLastSeen;
+  final bool isGroup;
 
   const ChatScreen({
     super.key,
@@ -28,6 +30,7 @@ class ChatScreen extends StatefulWidget {
     this.avatarUrl,
     this.otherUserId,
     this.otherLastSeen,
+    this.isGroup = false,
   });
 
   @override
@@ -45,11 +48,13 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _currentUserId;
   bool _otherTyping = false;
   Timer? _typingTimer;
+  late String _title;
 
   @override
   void initState() {
     super.initState();
     _currentUserId = context.read<AuthProvider>().user?['id'] as String?;
+    _title = widget.title;
     _chatProvider = ChatProvider(
       api: context.read<ApiClient>(),
       conversationId: widget.conversationId,
@@ -89,6 +94,10 @@ class _ChatScreenState extends State<ChatScreen> {
             if (dt != null) _chatProvider.applyRead(uid, dt);
           }
         }
+      } else if (event.type == 'group_renamed') {
+        final payload = event.data['data'];
+        final t = payload is Map ? payload['title'] as String? : null;
+        if (t != null && mounted) setState(() => _title = t);
       }
     });
 
@@ -126,6 +135,21 @@ class _ChatScreenState extends State<ChatScreen> {
   void _clearTyping() {
     _typingTimer?.cancel();
     if (mounted && _otherTyping) setState(() => _otherTyping = false);
+  }
+
+  Future<void> _openGroupInfo() async {
+    final nav = Navigator.of(context);
+    final result = await nav.push(
+      MaterialPageRoute(
+        builder: (_) => GroupInfoScreen(
+          conversationId: widget.conversationId,
+          title: _title,
+        ),
+      ),
+    );
+    if (result == 'left' && mounted) {
+      nav.pop(); // вышли из группы — закрываем чат
+    }
   }
 
   void _onMessagesChanged() {
@@ -177,6 +201,14 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Scaffold(
         appBar: AppBar(
           titleSpacing: 0,
+          actions: [
+            if (widget.isGroup)
+              IconButton(
+                icon: const Icon(Icons.info_outline),
+                tooltip: 'О группе',
+                onPressed: _openGroupInfo,
+              ),
+          ],
           title: Row(
             children: [
               CircleAvatar(
@@ -185,8 +217,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     ? NetworkImage(widget.avatarUrl!)
                     : null,
                 child: widget.avatarUrl == null
-                    ? Text(widget.title.isNotEmpty
-                        ? widget.title[0].toUpperCase()
+                    ? Text(_title.isNotEmpty
+                        ? _title[0].toUpperCase()
                         : '?')
                     : null,
               ),
@@ -197,7 +229,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      widget.title,
+                      _title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),

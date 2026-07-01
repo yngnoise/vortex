@@ -208,6 +208,28 @@ class ApiClient {
     return await _getList('/conversations/$conversationId/read-state');
   }
 
+  // ── Group management ────────────────────────────────
+
+  Future<List<dynamic>> getConversationMembers(String conversationId) async {
+    return await _getList('/conversations/$conversationId/members');
+  }
+
+  Future<Map<String, dynamic>> renameGroup(String conversationId, String title) async {
+    return await _patch('/conversations/$conversationId', {'title': title});
+  }
+
+  Future<void> addGroupMembers(String conversationId, List<String> userIds) async {
+    await _post('/conversations/$conversationId/members', {'user_ids': userIds});
+  }
+
+  Future<void> removeGroupMember(String conversationId, String userId) async {
+    await _delete('/conversations/$conversationId/members/$userId');
+  }
+
+  Future<void> leaveConversation(String conversationId) async {
+    await _post('/conversations/$conversationId/leave', {});
+  }
+
   // ── Channels ────────────────────────────────────────
 
   Future<Map<String, dynamic>> createChannel(String name, String description, bool isPublic) async {

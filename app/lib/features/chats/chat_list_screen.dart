@@ -94,6 +94,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
           avatarUrl: conv.displayAvatar,
           otherUserId: conv.isDirect ? conv.otherUserId : null,
           otherLastSeen: conv.isDirect ? conv.otherLastSeen : null,
+          isGroup: conv.isGroup,
         ),
       ),
     );
