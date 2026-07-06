@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -28,6 +29,7 @@ import (
 type Storage struct {
 	client     *minio.Client
 	bucketName string
+	publicURL  string
 }
 
 // FileInfo — метаданные загруженного файла.
@@ -40,7 +42,7 @@ type FileInfo struct {
 
 // NewStorage создаёт клиент MinIO и инициализирует бакет.
 // Если бакет не существует — создаёт его.
-func NewStorage(endpoint, accessKey, secretKey, bucketName string, useSSL bool) (*Storage, error) {
+func NewStorage(endpoint, accessKey, secretKey, bucketName string, useSSL bool, publicURL string) (*Storage, error) {
 	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(accessKey, secretKey, ""),
 		Secure: useSSL,
@@ -52,6 +54,7 @@ func NewStorage(endpoint, accessKey, secretKey, bucketName string, useSSL bool) 
 	s := &Storage{
 		client:     client,
 		bucketName: bucketName,
+		publicURL:  publicURL,
 	}
 
 	// Создаём бакет если не существует
@@ -100,7 +103,7 @@ func (s *Storage) GetPresignedURL(ctx context.Context, key string, ttl time.Dura
 // Работает только если бакет настроен как публичный.
 // Для dev-окружения используем это, для prod — presigned URLs.
 func (s *Storage) GetPublicURL(key string) string {
-	return fmt.Sprintf("http://localhost:9000/%s/%s", s.bucketName, key)
+	return fmt.Sprintf("%s/%s/%s", strings.TrimRight(s.publicURL, "/"), s.bucketName, key)
 }
 
 // Stat возвращает публичный URL, размер и MIME-тип объекта.

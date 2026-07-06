@@ -15,6 +15,7 @@ import (
 	"github.com/yngnoise/vortex/internal/messaging"
 	"github.com/yngnoise/vortex/internal/middleware"
 	"github.com/yngnoise/vortex/internal/realtime"
+	"github.com/yngnoise/vortex/migrations"
 	"github.com/yngnoise/vortex/pkg/config"
 	"github.com/yngnoise/vortex/pkg/database"
 )
@@ -22,6 +23,9 @@ import (
 func main() {
 	// ── 1. Конфиг ────────────────────────────
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
 
 	// ── 2. PostgreSQL ────────────────────────
 	db, err := database.NewPool(cfg.Database.URL)
@@ -30,6 +34,12 @@ func main() {
 	}
 	defer db.Close()
 	log.Println("Connected to PostgreSQL")
+
+	// ── 2b. Миграции ─────────────────────────
+	if err := database.RunMigrations(context.Background(), db, migrations.FS); err != nil {
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
+	log.Println("Migrations up to date")
 
 	// ── 3. Centrifugo client ─────────────────
 	rtClient := realtime.NewClient(
@@ -42,6 +52,7 @@ func main() {
 	storage, err := media.NewStorage(
 		cfg.MinIO.Endpoint, cfg.MinIO.AccessKey,
 		cfg.MinIO.SecretKey, cfg.MinIO.Bucket, cfg.MinIO.UseSSL,
+		cfg.MinIO.PublicURL,
 	)
 	if err != nil {
 		log.Fatalf("Failed to connect to MinIO: %v", err)
