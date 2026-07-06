@@ -1,0 +1,71 @@
+# Production-ish stack. Reads secrets from a root .env file (see server/.env.example).
+# TLS + locking down the internal services (Centrifugo admin, MinIO) is handled in
+# the security pass — for now the API, WebSocket, and media ports are exposed directly.
+#
+#   cp server/.env.example .env   # then fill real values
+#   docker compose -f docker-compose.prod.yml up -d --build
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vortex}
+      POSTGRES_USER: ${POSTGRES_USER:-vortex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vortex}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    volumes:
+      - redisdata:/data
+
+  centrifugo:
+    image: centrifugo/centrifugo:v5
+    restart: unless-stopped
+    command: centrifugo -c config.json
+    ports:
+      - "8001:8000" # WebSocket — put behind wss:// proxy in real prod
+    volumes:
+      - ./deploy/centrifugo/config.json:/centrifugo/config.json:ro
+    depends_on: [redis]
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY in .env}
+    ports:
+      - "9000:9000" # media download — put behind proxy / make private in the security pass
+    volumes:
+      - miniodata:/data
+
+  api:
+    build:
+      context: ./server
+    restart: unless-stopped
+    env_file: [.env]
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      centrifugo:
+        condition: service_started
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
